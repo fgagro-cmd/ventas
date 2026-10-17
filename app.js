@@ -2,7 +2,8 @@
 /* Ventas · FG Agro — ventas por pedido, compras, stock a precio medio, tarifa, deudas y comisiones.
    Todo se guarda en el propio móvil (IndexedDB) y funciona sin conexión. */
 
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.1.0';
+const CATEGORIAS = ['Fertilizantes', 'Fitosanitarios', 'Herbicidas', 'Bioestimulantes']; // las de Stock fincas (no se tocan)
 
 /* ---------- Utilidades ---------- */
 const $ = (s, r = document) => r.querySelector(s);
@@ -65,37 +66,18 @@ function persist() {
   return saveChain;
 }
 
-function seedState() {
-  const S = window.SEED;
-  const proveedores = [];
-  const provId = (nombre) => {
-    nombre = String(nombre || '').trim(); if (!nombre) return null;
-    let p = proveedores.find((x) => x.nombre.toLowerCase() === nombre.toLowerCase());
-    if (!p) { p = { id: 'v' + (proveedores.length + 1), nombre }; proveedores.push(p); }
-    return p.id;
-  };
-  S.proveedores.forEach(provId);
-  const productos = S.productos.map(([nombre, tipo, prov, tarifa], i) => ({ id: 'p' + (i + 1), nombre, tipo: tipo || '', prov: provId(prov), tarifa, activo: true }));
-  const prodId = (n) => productos.find((p) => p.nombre === n).id;
-  const clientes = S.clientes.map((nombre, i) => ({ id: 'c' + (i + 1), nombre, propio: S.propios.includes(nombre), activo: true }));
-  const cliId = (n) => clientes.find((c) => c.nombre === n).id;
-  const compras = S.compras.map(([fecha, prod, prov, cant, precio], i) => ({ id: 'k' + (i + 1), ts: i, fecha, prod: prodId(prod), prov: provId(prov), cant, precio, nota: '' }));
-  const pedidos = S.pedidos.map(([fecha, cli, lineas], i) => ({
-    id: 'o' + (i + 1), ts: i, fecha, cli: cliId(cli), nota: '',
-    lineas: lineas.map(([n, cant, precio, coste, concepto], j) => concepto
-      ? { k: 'l' + (i + 1) + '-' + j, prod: null, txt: n, cant, precio, coste: 0 }
-      : { k: 'l' + (i + 1) + '-' + j, prod: prodId(n), txt: '', cant, precio, coste }),
-  }));
-  // Lo que en el Excel estaba «Cobrado = Si» se carga como un cobro por cliente que salda esos pedidos.
-  const cobros = [];
-  clientes.forEach((c) => {
-    const aplic = {}; let fecha = '';
-    S.pedidos.forEach(([f, cli, , cob], i) => { if (cob && cli === c.nombre) { const p = pedidos[i]; aplic[p.id] = round(pedidoImp(p), 2); if (f > fecha) fecha = f; } });
-    if (Object.keys(aplic).length) cobros.push({ id: 'h' + c.id, ts: 0, fecha, cli: c.id, aplic, nota: 'Cobros anteriores (Excel)', hist: true });
-  });
-  const comisiones = S.comisiones.map(([fecha, producto, prov, cliente, cant, precio, modo, pct, fijo, cob], i) => ({ id: 'm' + (i + 1), ts: i, fecha, producto, prov, cliente, cant, precio, modo, pct, fijo, cobrado: !!cob }));
-  return { v: 1, settings: { margenPropio: 0.05, lastBackup: null }, proveedores, productos, clientes, compras, pedidos, cobros, comisiones };
+/* La app no lleva datos dentro (el repositorio es público). En un móvil nuevo empieza vacía
+   y se restaura desde la hoja de Google o desde un fichero de copia. */
+function emptyState() {
+  return { v: 2, settings: { margenPropio: 0.05, lastBackup: null }, proveedores: [], productos: [], clientes: [], compras: [], pedidos: [], cobros: [], comisiones: [], mxPend: [] };
 }
+/* v1 → v2: enlace con los maestros (mid en clientes y productos, cola de altas). No cambia ningún dato existente. */
+function migrar(s) {
+  if (!Array.isArray(s.mxPend)) s.mxPend = [];
+  if (!s.v || s.v < 2) s.v = 2;
+  return s;
+}
+const appVacia = () => !state.pedidos.length && !state.compras.length && !state.productos.length;
 
 const prodById = (id, st = state) => st.productos.find((p) => p.id === id);
 const cliById = (id, st = state) => st.clientes.find((c) => c.id === id);
@@ -385,6 +367,7 @@ function renderInicio() {
   const key = ui.rankWho === 'cli' ? 'imp' : ui.rank;
   const top = src.sort((a, b) => b[key] - a[key]).slice(0, 8), maxv = top.length ? top[0][key] : 1;
   $('#view').innerHTML = `
+    ${appVacia() ? `<div class="card"><h3>Este móvil todavía no tiene datos</h3><p class="small" style="margin-top:0">La app ya no lleva el histórico dentro. Restáuralo una vez desde Ajustes: «Copia automática en Google Sheets» → «Restaurar desde la hoja», o «Restaurar desde fichero» con la copia guardada en Drive (Apps › Copia de seguridad).</p><div class="actions"><button class="btn primary" id="goAj">Abrir Ajustes</button></div></div>` : ''}
     ${yearChips(ui.dashY, 'dY')}
     <div class="tiles">
       <div class="tile"><span>Tus fincas</span><strong>${eur0(r.own.imp)}</strong><small>benef. ${eur0(r.own.ben)} · ${pctf(r.own.margen)}</small></div>
@@ -406,6 +389,7 @@ function renderInicio() {
   $('#rkWho').onclick = (e) => { const b = e.target.closest('[data-v]'); if (b) { ui.rankWho = b.dataset.v; renderInicio(); } };
   const rb = $('#rkBy'); if (rb) rb.onclick = (e) => { const b = e.target.closest('[data-v]'); if (b) { ui.rank = b.dataset.v; renderInicio(); } };
   $('#goDeudas').onclick = () => { ui.tab = 'deudas'; window.scrollTo(0, 0); renderAll(); };
+  const ga = $('#goAj'); if (ga) ga.onclick = openSettings;
 }
 
 /* ---------- Pestaña: Ventas ---------- */
@@ -465,7 +449,6 @@ function openPedido(orig, preCli) {
     : { fecha: todayISO(), cli: preCli || '', nota: '', cobrado: false, lineas: [] };
   if (isNew) f.lineas.push({ k: nk(), prod: '', txt: '', cant: '', precio: '', auto: true, concepto: false });
   const newCli = { on: false, nombre: '', propio: false };
-  const clis = state.clientes.filter((c) => c.activo || c.id === f.cli).sort((a, b) => (b.propio - a.propio) || byName(a, b));
   const prods = state.productos.filter((p) => p.activo || f.lineas.some((l) => l.prod === p.id)).sort(byName);
   const body = openSheet(isNew ? 'Nueva venta' : 'Editar venta', '<div id="pf"></div>');
   const box = $('#pf', body);
@@ -494,7 +477,7 @@ function openPedido(orig, preCli) {
       <div class="lh" data-h></div></div>`;
   };
   const draw = () => {
-    const cliOpts = clis.map((c) => `<option value="${c.id}" ${f.cli === c.id && !newCli.on ? 'selected' : ''}>${esc(c.nombre)}${c.propio ? ' (tus fincas)' : ''}</option>`).join('');
+    const cliOpts = cliOptions(newCli.on ? '' : f.cli);
     const t = orig ? { pg: pagadoOf(orig), es: ESTADO[estadoOf(orig)] } : null;
     box.innerHTML = `
       ${orig ? `<div class="box"><div><span>Estado</span><b><span class="pill ${t.es[0]}">${t.es[1]}</span></b></div>${t.pg > EPS ? `<div><span>Cobrado</span><b>${eur(t.pg)}</b></div><div><span>Pendiente</span><b>${eur(pendOf(orig))}</b></div>` : ''}</div>` : ''}
@@ -571,11 +554,11 @@ function openPedido(orig, preCli) {
   };
   const save = () => {
     if (!f.fecha) return toast('Indica la fecha', true);
-    let cliId = f.cli, nuevo = null;
+    let cliId = f.cli, nuevo = null, alta = null;
     if (newCli.on) {
       const nombre = newCli.nombre.trim(); if (!nombre) return toast('Escribe el nombre del cliente nuevo', true);
-      const ex = state.clientes.find((c) => c.nombre.toLowerCase() === nombre.toLowerCase());
-      if (ex) cliId = ex.id; else { nuevo = { id: 'c' + uid().slice(0, 8), nombre, propio: newCli.propio, activo: true }; cliId = nuevo.id; }
+      const r = clienteParaNombre(nombre, newCli.propio);
+      if (r.id) cliId = r.id; else { nuevo = r.nuevo; alta = r.alta || null; cliId = nuevo.id; }
     }
     if (!cliId) return toast('Elige el cliente', true);
     const ls = f.lineas.filter((l) => l.concepto ? (l.txt.trim() || l.precio.trim()) : (l.prod || l.cant.trim()));
@@ -601,7 +584,7 @@ function openPedido(orig, preCli) {
     }
     const id = orig ? orig.id : 'o' + uid().slice(0, 8);
     const ok = commit((c) => {
-      if (nuevo) c.clientes.push(nuevo);
+      if (nuevo) { c.clientes.push(nuevo); if (alta) pedirAlta(c, 'cliente', nuevo.id, alta); }
       const data = { fecha: f.fecha, cli: cliId, nota: f.nota.trim(), lineas };
       if (orig) {
         const p = c.pedidos.find((x) => x.id === id);
@@ -613,7 +596,7 @@ function openPedido(orig, preCli) {
         if (imp > 0) c.cobros.push({ id: uid(), ts: Date.now(), fecha: f.fecha, cli: cliId, aplic: { [id]: imp }, nota: 'Cobrado al vender', hist: false });
       }
     });
-    if (ok) { closeSheet(); toast((orig ? 'Venta actualizada' : 'Venta guardada') + (lastTrim > 0 ? ` · se quitaron ${eur(lastTrim)} de cobros` : '')); }
+    if (ok) { closeSheet(); toast((orig ? 'Venta actualizada' : 'Venta guardada') + (lastTrim > 0 ? ` · se quitaron ${eur(lastTrim)} de cobros` : '') + (nuevo && nuevo.mid ? ' · cliente del maestro' : '')); if (alta) refreshMx({}); }
   };
   draw();
   if (isNew && !preCli) setTimeout(() => $('#pC', box)?.focus(), 60);
@@ -665,7 +648,7 @@ function openCompra(orig, preProd) {
   const isNew = !orig;
   const f = orig ? { fecha: orig.fecha, prod: orig.prod, prov: orig.prov || '', cant: fmtIn(orig.cant, 3), precio: fmtIn(orig.precio), nota: orig.nota || '' }
     : { fecha: todayISO(), prod: preProd || '', prov: preProd ? prodById(preProd).prov || '' : '', cant: '', precio: preProd ? fmtIn(stockOf(preProd).last) : '', nota: '' };
-  const np = { on: false, nombre: '', tipo: '', tarifa: '' };
+  const np = { on: false, ...npInit() };
   const nv = { on: false, nombre: '' };
   const body = openSheet(isNew ? 'Nueva compra' : 'Editar compra', '<div id="cf"></div>');
   const box = $('#cf', body);
@@ -675,9 +658,7 @@ function openCompra(orig, preProd) {
     box.innerHTML = `
       <label class="fld"><span>Fecha</span><input id="kF" type="date" value="${f.fecha}"></label>
       <label class="fld"><span>Producto</span><select id="kP"><option value="">Elige producto…</option>${prods.map((p) => `<option value="${p.id}" ${!np.on && f.prod === p.id ? 'selected' : ''}>${esc(p.nombre)}</option>`).join('')}<option value="__new" ${np.on ? 'selected' : ''}>+ Producto nuevo…</option></select></label>
-      ${np.on ? `<label class="fld"><span>Nombre del producto nuevo</span><input id="kPN" type="text" value="${esc(np.nombre)}" placeholder="Por ejemplo: Ironfeed 48 E/5 Kg" autocomplete="off"></label>
-        <div class="grid2"><label class="fld"><span>Tipo</span><input id="kPT" type="text" list="kPTl" value="${esc(np.tipo)}" autocomplete="off"></label>${field('kPR', 'Tarifa venta €', np.tarifa, { ph: 'precio normal' })}</div>
-        <datalist id="kPTl">${tipos().map((t) => `<option value="${esc(t)}">`).join('')}</datalist>` : ''}
+      ${np.on ? npHTML(np) : ''}
       <label class="fld"><span>Proveedor</span><select id="kV"><option value="">Sin proveedor</option>${provs.map((p) => `<option value="${p.id}" ${!nv.on && f.prov === p.id ? 'selected' : ''}>${esc(p.nombre)}</option>`).join('')}<option value="__new" ${nv.on ? 'selected' : ''}>+ Proveedor nuevo…</option></select></label>
       ${nv.on ? `<label class="fld"><span>Nombre del proveedor nuevo</span><input id="kVN" type="text" value="${esc(nv.nombre)}" autocomplete="off"></label>` : ''}
       <div class="grid2">${field('kC', 'Cantidad', f.cant, { ph: '0' })}${field('kR', 'Precio unidad €', f.precio, { ph: '0' })}</div>
@@ -687,11 +668,11 @@ function openCompra(orig, preProd) {
       <div class="actions ${isNew ? '' : 'two'}">${isNew ? '' : '<button class="btn danger" id="kDel">Borrar</button>'}<button class="btn primary" id="kSave">Guardar</button></div>`;
     $('#kF', box).onchange = (e) => { f.fecha = e.target.value; };
     $('#kP', box).onchange = (e) => {
-      if (e.target.value === '__new') { np.on = true; f.prod = ''; }
+      if (e.target.value === '__new') { Object.assign(np, npInit(), { on: true }); f.prod = ''; }
       else { np.on = false; f.prod = e.target.value; const p = prodById(f.prod); if (p && isNew) { if (p.prov) { f.prov = p.prov; nv.on = false; } if (!f.precio) f.precio = fmtIn(stockOf(p.id).last); } }
       draw();
     };
-    if (np.on) { $('#kPN', box).oninput = (e) => { np.nombre = e.target.value; }; $('#kPT', box).oninput = (e) => { np.tipo = e.target.value; }; $('#kPR', box).oninput = (e) => { np.tarifa = e.target.value; }; }
+    if (np.on) npBind(box, np, draw, (mp) => { if (mp && mp.proveedor && !nv.on) { const v = state.proveedores.find((x) => MX.norm(x.nombre) === MX.norm(mp.proveedor)); if (v) f.prov = v.id; } });
     $('#kV', box).onchange = (e) => { if (e.target.value === '__new') nv.on = true; else { nv.on = false; f.prov = e.target.value; } draw(); };
     if (nv.on) $('#kVN', box).oninput = (e) => { nv.nombre = e.target.value; };
     $('#kC', box).oninput = (e) => { f.cant = e.target.value; prev(); };
@@ -718,11 +699,10 @@ function openCompra(orig, preProd) {
       const ex = state.proveedores.find((p) => p.nombre.toLowerCase() === nombre.toLowerCase());
       if (ex) provId = ex.id; else { newProv = { id: 'v' + uid().slice(0, 8), nombre }; provId = newProv.id; }
     }
+    let alta = null, aviso = '';
     if (np.on) {
-      const nombre = np.nombre.trim(); if (!nombre) return toast('Escribe el nombre del producto', true);
-      if (state.productos.some((p) => p.nombre.toLowerCase() === nombre.toLowerCase())) return toast('Ese producto ya existe: elígelo de la lista', true);
-      const tarifa = np.tarifa.trim() ? parseNum(np.tarifa) : 0; if (!(tarifa >= 0)) return toast('Revisa la tarifa', true);
-      newProd = { id: 'p' + uid().slice(0, 8), nombre, tipo: np.tipo.trim(), prov: provId, tarifa: round(tarifa, 4), activo: true }; prodId = newProd.id;
+      try { const r = npBuild(np, provId); newProd = r.prod; alta = r.alta; aviso = r.aviso || ''; } catch (e) { return toast(e.message, true); }
+      prodId = newProd.id;
     }
     if (!prodId) return toast('Elige el producto', true);
     const q = parseNum(f.cant), p = parseNum(f.precio);
@@ -731,11 +711,11 @@ function openCompra(orig, preProd) {
     const data = { fecha: f.fecha, prod: prodId, prov: provId, cant: round(q, 4), precio: round(p, 6), nota: f.nota.trim() };
     const ok = commit((c) => {
       if (newProv) c.proveedores.push(newProv);
-      if (newProd) c.productos.push(newProd);
+      if (newProd) { c.productos.push(newProd); if (alta) pedirAlta(c, 'producto', newProd.id, alta); }
       if (isNew) c.compras.push({ id: 'k' + uid().slice(0, 8), ts: Date.now(), ...data });
       else Object.assign(c.compras.find((x) => x.id === orig.id), data);
     });
-    if (ok) { closeSheet(); toast(isNew ? 'Compra guardada' : 'Compra actualizada'); }
+    if (ok) { closeSheet(); toast((isNew ? 'Compra guardada' : 'Compra actualizada') + (aviso ? ' · ' + aviso : '')); if (alta) refreshMx({}); }
   };
   draw();
 }
@@ -808,23 +788,43 @@ function openProducto(id) {
     </div>
     <div class="actions"><button class="btn primary" id="prBuy">Anotar compra de este producto</button></div>`}
     <h3>Datos del producto</h3>
-    <label class="fld"><span>Nombre</span><input id="prN" type="text" value="${esc(p.nombre)}" autocomplete="off"></label>
+    ${isNew ? '<div id="prNp"></div>' : p.mid ? `<div class="box"><div><span>Ficha del maestro</span><b>${esc(p.mid)} · ${esc(p.tipo || 'sin categoría')}</b></div>${p.pres ? `<div><span>Envase</span><b>${esc(p.pres)}</b></div>` : ''}</div>
+      <p class="hint">El nombre y la categoría vienen del maestro de productos de Drive.</p>
+      ${field('prR', 'Tarifa venta €', fmtIn(p.tarifa), { ph: '0' })}`
+    : `<label class="fld"><span>Nombre</span><input id="prN" type="text" value="${esc(p.nombre)}" autocomplete="off"></label>
     <div class="grid2"><label class="fld"><span>Tipo</span><input id="prT" type="text" list="prTl" value="${esc(p.tipo)}" autocomplete="off"></label>${field('prR', 'Tarifa venta €', fmtIn(p.tarifa), { ph: '0' })}</div>
-    <datalist id="prTl">${tipos().map((t) => `<option value="${esc(t)}">`).join('')}</datalist>
+    <datalist id="prTl">${[...new Set([...CATEGORIAS, ...tipos()])].map((t) => `<option value="${esc(t)}">`).join('')}</datalist>
+    ${IX ? `<label class="fld"><span>Enlazar con el maestro</span><select id="prMx"><option value="">Sin enlazar</option>${mxProdOptions()}</select></label>` : ''}`}
     <label class="fld"><span>Proveedor habitual</span><select id="prV"><option value="">Sin proveedor</option>${[...state.proveedores].sort(byName).map((v) => `<option value="${v.id}" ${p.prov === v.id ? 'selected' : ''}>${esc(v.nombre)}</option>`).join('')}</select></label>
     <button type="button" class="switch" id="prA" role="switch" aria-checked="${p.activo}"><span>Activo (aparece al vender y comprar)</span><i></i></button>
     <div class="actions ${isNew ? '' : 'two'}">${isNew ? '' : `<button class="btn danger" id="prDel" ${used ? 'disabled' : ''}>Borrar</button>`}<button class="btn primary" id="prSave">Guardar</button></div>
     ${used ? '<p class="hint" style="margin-top:10px">Solo se pueden borrar productos sin movimientos. Si ya no lo trabajas, desactívalo.</p>' : ''}
     ${movs.length ? `<h3>Últimos movimientos</h3><ul class="list">${movs.slice(0, 10).map((m) => `<li class="row" style="box-shadow:none"><div class="main"><div class="name">${m.t} · ${esc(m.who)}</div><div class="sub">${fmtDate(m.fecha)} · ${nf(m.pr, 2, 4)} €</div></div><div class="side"><b class="${m.q < 0 ? '' : ''}">${m.q > 0 ? '+' : ''}${qf(m.q)}</b></div></li>`).join('')}</ul>` : ''}`);
   let activo = p.activo;
+  const np = npInit();
+  const drawNp = () => { const b = $('#prNp', body); if (!b) return; b.innerHTML = npHTML(np); npBind(b, np, drawNp, (mp) => { const sel = $('#prV', body); if (mp && mp.proveedor && sel && !sel.value) { const v = state.proveedores.find((x) => MX.norm(x.nombre) === MX.norm(mp.proveedor)); if (v) sel.value = v.id; } }); };
+  drawNp();
   $('#prA', body).onclick = (e) => { activo = !activo; e.currentTarget.setAttribute('aria-checked', activo); };
   if (!isNew) $('#prBuy', body).onclick = () => reopen(() => openCompra(null, id));
   $('#prSave', body).onclick = () => {
-    const nombre = $('#prN', body).value.trim(); if (!nombre) return toast('Escribe el nombre', true);
-    if (state.productos.some((o) => o.id !== id && o.nombre.toLowerCase() === nombre.toLowerCase())) return toast('Ya hay un producto con ese nombre', true);
+    const prov = $('#prV', body).value || null;
+    if (isNew) {
+      let r; try { r = npBuild(np, prov); } catch (e) { return toast(e.message, true); }
+      r.prod.activo = activo;
+      if (commit((c) => { c.productos.push(r.prod); if (r.alta) pedirAlta(c, 'producto', r.prod.id, r.alta); })) { closeSheet(); toast('Producto creado' + (r.aviso ? ' · ' + r.aviso : '')); if (r.alta) refreshMx({}); }
+      return;
+    }
     const tr = $('#prR', body).value.trim(); const tarifa = tr ? parseNum(tr) : 0; if (!(tarifa >= 0)) return toast('Revisa la tarifa', true);
-    const data = { nombre, tipo: $('#prT', body).value.trim(), prov: $('#prV', body).value || null, tarifa: round(tarifa, 4), activo };
-    if (commit((c) => { if (isNew) c.productos.push({ id: 'p' + uid().slice(0, 8), ...data }); else Object.assign(prodById(id, c), data); })) { closeSheet(); toast(isNew ? 'Producto creado' : 'Producto actualizado'); }
+    if (p.mid) { if (commit((c) => { Object.assign(prodById(id, c), { prov, tarifa: round(tarifa, 4), activo }); })) { closeSheet(); toast('Producto actualizado'); } return; }
+    const nombre = $('#prN', body).value.trim(); if (!nombre) return toast('Escribe el nombre', true);
+    if (state.productos.some((o) => o.id !== id && MX.norm(o.nombre) === MX.norm(nombre))) return toast('Ya hay un producto con ese nombre', true);
+    const data = { nombre, tipo: $('#prT', body).value.trim(), prov, tarifa: round(tarifa, 4), activo };
+    const lk = $('#prMx', body) ? $('#prMx', body).value : '';
+    if (lk) {
+      const mid = lk.slice(0, lk.indexOf('|')), pres = lk.slice(lk.indexOf('|') + 1);
+      Object.assign(data, { mid, pres });
+    }
+    if (commit((c) => { Object.assign(prodById(id, c), data); })) { closeSheet(); toast('Producto actualizado'); if (lk) aplicarMaestros(true); }
   };
   if (!isNew && !used) armDelete($('#prDel', body), () => { if (commit((c) => { c.productos = c.productos.filter((o) => o.id !== id); })) { closeSheet(); toast('Producto borrado'); } });
 }
@@ -1067,7 +1067,7 @@ function openComision(orig) {
     <label class="fld"><span>Producto</span><input id="mP" type="text" list="mPl" value="${esc(f.producto)}" autocomplete="off"></label>
     <label class="fld"><span>Proveedor</span><input id="mV" type="text" list="mVl" value="${esc(f.prov)}" autocomplete="off"></label>
     ${dl('mCl', uniq([...state.comisiones.map((m) => m.cliente), ...state.clientes.map((c) => c.nombre)]))}
-    ${dl('mPl', uniq([...state.comisiones.map((m) => m.producto), ...state.productos.map((p) => p.nombre)]))}
+    ${dl('mPl', uniq([...state.comisiones.map((m) => m.producto), ...state.productos.map((p) => p.nombre), ...(IX ? [...IX.prod.values()].map((p) => p.nombre) : [])]))}
     ${dl('mVl', uniq([...state.comisiones.map((m) => m.prov), ...state.proveedores.map((p) => p.nombre)]))}
     <div class="grid2">${field('mQ', 'Cantidad', f.cant, { ph: '0' })}${field('mR', 'Precio €', f.precio, { ph: '0' })}</div>
     <div class="seg" id="mM"><button type="button" data-v="pct" aria-pressed="${f.modo === 'pct'}">Porcentaje</button><button type="button" data-v="fijo" aria-pressed="${f.modo === 'fijo'}">Importe fijo</button></div>
@@ -1113,31 +1113,43 @@ function openClientes() {
   const cs = [...state.clientes].sort((a, b) => (b.propio - a.propio) || (b.activo - a.activo) || byName(a, b));
   const body = openSheet('Clientes', `
     <div class="actions" style="margin-bottom:12px"><button class="btn primary" id="clNew">+ Cliente nuevo</button></div>
-    <ul class="list" id="clList">${cs.map((c) => { const n = state.pedidos.filter((p) => p.cli === c.id).length; return `<li><button class="row ${c.activo ? '' : 'dim'}" data-id="${c.id}"><div class="main"><div class="name">${esc(c.nombre)}</div><div class="sub">${c.propio ? '<span class="pill own">Tus fincas</span>' : ''}${c.activo ? '' : '<span class="pill">Inactivo</span>'}${n} ${n === 1 ? 'pedido' : 'pedidos'}</div></div><div class="side"><b>${deudaCli(c.id) > 0 ? eur(deudaCli(c.id)) : ''}</b></div></button></li>`; }).join('')}</ul>`);
+    <ul class="list" id="clList">${cs.map((c) => { const n = state.pedidos.filter((p) => p.cli === c.id).length; return `<li><button class="row ${c.activo ? '' : 'dim'}" data-id="${c.id}"><div class="main"><div class="name">${esc(c.nombre)}</div><div class="sub">${c.propio ? '<span class="pill own">Tus fincas</span>' : ''}${c.activo ? '' : '<span class="pill">Inactivo</span>'}${c.mid ? `<span class="pill">${esc(c.mid)}</span>` : (mxOn() ? '<span class="pill par">Sin enlazar</span>' : '')}${n} ${n === 1 ? 'pedido' : 'pedidos'}</div></div><div class="side"><b>${deudaCli(c.id) > 0 ? eur(deudaCli(c.id)) : ''}</b></div></button></li>`; }).join('')}</ul>`);
   $('#clNew', body).onclick = () => reopen(() => openCliente(null));
   $('#clList', body).onclick = (e) => { const b = e.target.closest('[data-id]'); if (b) reopen(() => openCliente(b.dataset.id)); };
 }
 function openCliente(id) {
   const isNew = !id; const c = isNew ? { nombre: '', propio: false, activo: true } : cliById(id);
   const n = isNew ? 0 : state.pedidos.filter((p) => p.cli === id).length;
+  const m = !isNew && c.mid && IX ? IX.cli.get(c.mid) : null;
+  const pend = !isNew && state.mxPend.some((a) => a.ref === id);
   let propio = c.propio, activo = c.activo;
   const body = openSheet(isNew ? 'Cliente nuevo' : c.nombre, `
-    <label class="fld"><span>Nombre</span><input id="ceN" type="text" value="${esc(c.nombre)}" autocomplete="off"></label>
+    ${c.mid ? `<div class="box"><div><span>Ficha del maestro</span><b>${esc(c.mid)}${m ? ' · ' + esc(m.tipo) + ' · ' + esc(m.estado) : ''}</b></div>${m && m.servicios.length ? `<div><span>Servicios</span><b>${esc(m.servicios.join(', '))}</b></div>` : ''}</div>
+      <p class="hint">El nombre, si es finca propia y la baja vienen del maestro de clientes de Drive: cámbialos allí y se actualizan solos.</p>`
+    : `<label class="fld"><span>Nombre</span><input id="ceN" type="text" value="${esc(c.nombre)}" autocomplete="off"></label>
     <button type="button" class="switch" id="ceP" role="switch" aria-checked="${propio}"><span>Finca propia (precio medio + ${pctf(margenPropio())})</span><i></i></button>
     <button type="button" class="switch" id="ceA" role="switch" aria-checked="${activo}"><span>Activo (aparece al vender)</span><i></i></button>
-    <div class="actions ${isNew ? '' : 'two'}">${isNew ? '' : `<button class="btn danger" id="ceDel" ${n ? 'disabled' : ''}>Borrar</button>`}<button class="btn primary" id="ceSave">Guardar</button></div>
-    ${n ? `<p class="hint" style="margin-top:10px">Tiene ${n} pedidos: no se puede borrar, pero puedes desactivarlo. Si cambias el nombre, se cambia en todas sus ventas.</p>` : ''}
+    ${pend ? '<p class="hint">Alta pedida en el maestro: se enviará en cuanto haya conexión.</p>' : isNew && mxOn() ? '<p class="hint">Si no está en el maestro, se pide el alta y quedará en amarillo para que la revises.</p>' : ''}`}
+    <div class="actions ${isNew || c.mid ? '' : 'two'}">${isNew || c.mid ? '' : `<button class="btn danger" id="ceDel" ${n ? 'disabled' : ''}>Borrar</button>`}${c.mid ? '' : '<button class="btn primary" id="ceSave">Guardar</button>'}</div>
+    ${n && !c.mid ? `<p class="hint" style="margin-top:10px">Tiene ${n} pedidos: no se puede borrar, pero puedes desactivarlo. Si cambias el nombre, se cambia en todas sus ventas.</p>` : ''}
     ${isNew ? '' : '<div class="actions" style="margin-top:8px"><button class="btn" id="ceDeu">Ver su cuenta</button></div>'}`);
-  $('#ceP', body).onclick = (e) => { propio = !propio; e.currentTarget.setAttribute('aria-checked', propio); };
-  $('#ceA', body).onclick = (e) => { activo = !activo; e.currentTarget.setAttribute('aria-checked', activo); };
-  $('#ceSave', body).onclick = () => {
-    const nombre = $('#ceN', body).value.trim(); if (!nombre) return toast('Escribe el nombre', true);
-    if (state.clientes.some((o) => o.id !== id && o.nombre.toLowerCase() === nombre.toLowerCase())) return toast('Ya hay un cliente con ese nombre', true);
-    if (commit((st) => { if (isNew) st.clientes.push({ id: 'c' + uid().slice(0, 8), nombre, propio, activo }); else Object.assign(cliById(id, st), { nombre, propio, activo }); })) { toast(isNew ? 'Cliente creado' : 'Cliente actualizado'); reopen(openClientes); }
-  };
+  if (!c.mid) {
+    $('#ceP', body).onclick = (e) => { propio = !propio; e.currentTarget.setAttribute('aria-checked', propio); };
+    $('#ceA', body).onclick = (e) => { activo = !activo; e.currentTarget.setAttribute('aria-checked', activo); };
+    $('#ceSave', body).onclick = () => {
+      const nombre = $('#ceN', body).value.trim(); if (!nombre) return toast('Escribe el nombre', true);
+      if (state.clientes.some((o) => o.id !== id && MX.norm(o.nombre) === MX.norm(nombre))) return toast('Ya hay un cliente con ese nombre', true);
+      if (isNew) {
+        const r = clienteParaNombre(nombre, propio);
+        if (r.id) return toast(`Ya existe: ${cliName(r.id)}`, true);
+        const nuevo = { ...r.nuevo, activo: r.nuevo.mid ? r.nuevo.activo : activo };
+        if (commit((st) => { st.clientes.push(nuevo); if (r.alta) pedirAlta(st, 'cliente', nuevo.id, r.alta); })) { toast(nuevo.mid ? 'Estaba en el maestro: queda enlazado' : 'Cliente creado'); if (r.alta) refreshMx({}); reopen(openClientes); }
+      } else if (commit((st) => { Object.assign(cliById(id, st), { nombre, propio, activo }); })) { toast('Cliente actualizado'); reopen(openClientes); }
+    };
+  }
   if (!isNew) {
     $('#ceDeu', body).onclick = () => reopen(() => openDeudaCli(id));
-    if (!n) armDelete($('#ceDel', body), () => { if (commit((st) => { st.clientes = st.clientes.filter((o) => o.id !== id); st.cobros = st.cobros.filter((x) => x.cli !== id); })) { toast('Cliente borrado'); reopen(openClientes); } });
+    if (!n && !c.mid) armDelete($('#ceDel', body), () => { if (commit((st) => { st.clientes = st.clientes.filter((o) => o.id !== id); st.cobros = st.cobros.filter((x) => x.cli !== id); st.mxPend = st.mxPend.filter((a) => a.ref !== id); })) { toast('Cliente borrado'); reopen(openClientes); } });
   }
 }
 function openProveedores() {
@@ -1172,14 +1184,15 @@ function markDirty() {
   sync.dirty = true; syncRev++; saveSync(); renderSyncStatus();
   clearTimeout(syncTimer); syncTimer = setTimeout(() => runSync(), 2500);
 }
-async function callScript(accion, extra = {}) {
+const callScript = (accion, extra = {}) => postScript(sync.url, sync.clave, accion, extra);
+async function postScript(url, clave, accion, extra = {}) {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), 45000);
   try {
     // Sin cabeceras propias: así es una petición simple (text/plain) y Google no exige comprobación previa.
-    const res = await fetch(sync.url, { method: 'POST', body: JSON.stringify({ accion, clave: sync.clave, ...extra }), signal: ctrl.signal });
+    const res = await fetch(url, { method: 'POST', body: JSON.stringify({ accion, clave, ...extra }), signal: ctrl.signal });
     const txt = await res.text();
-    try { return JSON.parse(txt); } catch (_) { throw new Error('La dirección no responde como el receptor (revisa que esté publicado para «Cualquier usuario»)'); }
+    try { return JSON.parse(txt); } catch (_) { throw new Error('La dirección no responde como el script (revisa que esté publicado para «Cualquier usuario»)'); }
   } catch (e) {
     if (e && e.name === 'AbortError') throw new Error('Tiempo de espera agotado');
     if (e instanceof TypeError) throw new Error('Sin conexión con Google');
@@ -1193,16 +1206,16 @@ function syncPayload() {
     const es = ESTADO[estadoOf(p)][1]; const c = cliById(p.cli);
     p.lineas.forEach((l) => {
       const imp = lineImp(l), ic = round(l.cant * l.coste, 4), ben = round(imp - ic, 4); const pr = l.prod ? prodById(l.prod) : null;
-      ventas.push([p.fecha, MESES[Number(p.fecha.slice(5, 7)) - 1], yearOf(p.fecha), lineName(l), cliName(p.cli), l.cant, l.precio, imp, es, l.coste, ic, ben, imp ? round(ben / imp, 4) : 0, pr ? provName(pr.prov) : '', pr ? pr.tipo : 'Otro concepto', c && c.propio ? 'Tus fincas' : 'Cliente', p.nota || '']);
+      ventas.push([p.fecha, MESES[Number(p.fecha.slice(5, 7)) - 1], yearOf(p.fecha), lineName(l), cliName(p.cli), l.cant, l.precio, imp, es, l.coste, ic, ben, imp ? round(ben / imp, 4) : 0, pr ? provName(pr.prov) : '', pr ? pr.tipo : 'Otro concepto', c && c.propio ? 'Tus fincas' : 'Cliente', p.nota || '', (c && c.mid) || '', (pr && pr.mid) || '']);
     });
   });
-  const compras = [...state.compras].sort((a, b) => a.fecha.localeCompare(b.fecha) || a.ts - b.ts).map((c) => [c.fecha, MESES[Number(c.fecha.slice(5, 7)) - 1], yearOf(c.fecha), prodName(c.prod), prodById(c.prod)?.tipo || '', provName(c.prov), c.cant, c.precio, round(c.cant * c.precio, 2), c.nota || '']);
+  const compras = [...state.compras].sort((a, b) => a.fecha.localeCompare(b.fecha) || a.ts - b.ts).map((c) => [c.fecha, MESES[Number(c.fecha.slice(5, 7)) - 1], yearOf(c.fecha), prodName(c.prod), prodById(c.prod)?.tipo || '', provName(c.prov), c.cant, c.precio, round(c.cant * c.precio, 2), c.nota || '', prodById(c.prod)?.mid || '']);
   const prods = [...state.productos].sort(byName);
-  const stock = prods.map((p) => { const s = stockOf(p.id); return [p.nombre, p.tipo, provName(p.prov), round(s.qty, 3), round(s.avg, 4), round(s.valor, 2), p.tarifa, p.tarifa > 0 && s.avg > 0 ? round((p.tarifa - s.avg) / p.tarifa, 4) : '', p.activo ? 'Sí' : 'No']; });
+  const stock = prods.map((p) => { const s = stockOf(p.id); return [p.nombre, p.tipo, provName(p.prov), round(s.qty, 3), round(s.avg, 4), round(s.valor, 2), p.tarifa, p.tarifa > 0 && s.avg > 0 ? round((p.tarifa - s.avg) / p.tarifa, 4) : '', p.activo ? 'Sí' : 'No', p.mid || '']; });
   const cobros = [...state.cobros].sort((a, b) => a.fecha.localeCompare(b.fecha) || a.ts - b.ts).map((c) => [c.fecha, cliName(c.cli), cobroImp(c), Object.keys(c.aplic).length, c.nota || '']);
   const pend = [];
   [...state.pedidos].filter((p) => pendOf(p) > EPS).sort((a, b) => cliName(a.cli).localeCompare(cliName(b.cli), 'es') || a.fecha.localeCompare(b.fecha)).forEach((p) => {
-    pend.push([cliName(p.cli), p.fecha, totOf(p).imp, pagadoOf(p), pendOf(p), cliById(p.cli)?.propio ? 'Tus fincas' : 'Cliente', p.lineas.map((l) => lineName(l) + (l.prod ? ' ' + qf(l.cant) : '')).join(', ')]);
+    pend.push([cliName(p.cli), p.fecha, totOf(p).imp, pagadoOf(p), pendOf(p), cliById(p.cli)?.propio ? 'Tus fincas' : 'Cliente', p.lineas.map((l) => lineName(l) + (l.prod ? ' ' + qf(l.cant) : '')).join(', '), cliById(p.cli)?.mid || '']);
   });
   const coms = [...state.comisiones].sort((a, b) => a.fecha.localeCompare(b.fecha) || a.ts - b.ts).map((m) => [m.fecha, yearOf(m.fecha), m.producto, m.prov, m.cliente, m.cant, m.precio, round(m.cant * m.precio, 2), m.modo === 'pct' ? m.pct : '', comImp(m), m.cobrado ? 'Sí' : 'No']);
   const res = [];
@@ -1211,10 +1224,10 @@ function syncPayload() {
   const res2 = [['Valor del stock', round(vs.v, 2)], ['Pendiente de cobro clientes', dd.totCli], ['Pendiente tus fincas', dd.totOwn], ['Comisiones pendientes', round(state.comisiones.filter((m) => !m.cobrado).reduce((t, m) => t + comImp(m), 0), 2)]];
   const tablas = [
     { nombre: 'Resumen', cabecera: ['Año', 'Ventas (€)', 'Beneficio (€)', 'Margen', 'Ventas clientes (€)', 'Benef. clientes (€)', 'Ventas tus fincas (€)', 'Benef. tus fincas (€)', 'Comisiones (€)', 'Beneficio + comisiones (€)'], filas: res.concat([['', '', '', '', '', '', '', '', '', '']]).concat(res2.map((r) => [r[0], r[1], '', '', '', '', '', '', '', ''])), formatos: ['0', EUR, EUR, P, EUR, EUR, EUR, EUR, EUR, EUR], fechas: [] },
-    { nombre: 'Ventas', cabecera: ['Fecha', 'Mes', 'Año', 'Producto', 'Cliente', 'Cantidad', 'Precio (€)', 'Importe (€)', 'Cobro', 'Coste (€)', 'Importe coste (€)', 'Beneficio (€)', 'Margen', 'Proveedor', 'Tipo', 'Cliente / fincas', 'Nota'], filas: ventas, formatos: [F, null, '0', null, null, Q, E4, EUR, null, E4, EUR, EUR, P, null, null, null, null], fechas: [0] },
-    { nombre: 'Compras', cabecera: ['Fecha', 'Mes', 'Año', 'Producto', 'Tipo', 'Proveedor', 'Cantidad', 'Precio (€)', 'Importe (€)', 'Nota'], filas: compras, formatos: [F, null, '0', null, null, null, Q, E4, EUR, null], fechas: [0] },
-    { nombre: 'Stock', cabecera: ['Producto', 'Tipo', 'Proveedor', 'Stock', 'Precio medio (€)', 'Valor (€)', 'Tarifa (€)', 'Margen tarifa', 'Activo'], filas: stock, formatos: [null, null, null, Q, E4, EUR, E4, P, null], fechas: [] },
-    { nombre: 'Pendientes', cabecera: ['Cliente', 'Fecha pedido', 'Importe (€)', 'Pagado (€)', 'Pendiente (€)', 'Cliente / fincas', 'Productos'], filas: pend, formatos: [null, F, EUR, EUR, EUR, null, null], fechas: [1] },
+    { nombre: 'Ventas', cabecera: ['Fecha', 'Mes', 'Año', 'Producto', 'Cliente', 'Cantidad', 'Precio (€)', 'Importe (€)', 'Cobro', 'Coste (€)', 'Importe coste (€)', 'Beneficio (€)', 'Margen', 'Proveedor', 'Tipo', 'Cliente / fincas', 'Nota', 'ID cliente', 'ID producto'], filas: ventas, formatos: [F, null, '0', null, null, Q, E4, EUR, null, E4, EUR, EUR, P, null, null, null, null, null, null], fechas: [0] },
+    { nombre: 'Compras', cabecera: ['Fecha', 'Mes', 'Año', 'Producto', 'Tipo', 'Proveedor', 'Cantidad', 'Precio (€)', 'Importe (€)', 'Nota', 'ID producto'], filas: compras, formatos: [F, null, '0', null, null, null, Q, E4, EUR, null, null], fechas: [0] },
+    { nombre: 'Stock', cabecera: ['Producto', 'Tipo', 'Proveedor', 'Stock', 'Precio medio (€)', 'Valor (€)', 'Tarifa (€)', 'Margen tarifa', 'Activo', 'ID producto'], filas: stock, formatos: [null, null, null, Q, E4, EUR, E4, P, null, null], fechas: [] },
+    { nombre: 'Pendientes', cabecera: ['Cliente', 'Fecha pedido', 'Importe (€)', 'Pagado (€)', 'Pendiente (€)', 'Cliente / fincas', 'Productos', 'ID cliente'], filas: pend, formatos: [null, F, EUR, EUR, EUR, null, null, null], fechas: [1] },
     { nombre: 'Cobros', cabecera: ['Fecha', 'Cliente', 'Importe (€)', 'Nº pedidos', 'Nota'], filas: cobros, formatos: [F, null, EUR, '0', null], fechas: [0] },
     { nombre: 'Comisiones', cabecera: ['Fecha', 'Año', 'Producto', 'Proveedor', 'Cliente', 'Cantidad', 'Precio (€)', 'Importe venta (€)', '% Comisión', 'Comisión (€)', 'Cobrada'], filas: coms, formatos: [F, '0', null, null, null, Q, E4, EUR, P, EUR, null], fechas: [0] },
   ];
@@ -1276,7 +1289,7 @@ function drawSync(box) {
         const s = JSON.parse(est.estado);
         if (!validState(s)) throw new Error('La copia de la hoja no es válida');
         if (!confirm(`Se reemplazarán los datos de este móvil por los de la hoja (${stateInfo(s)}, copia ${ago(est.fecha)}). ¿Continuar?`)) return;
-        state = s; await persist(); closeSheet(); renderAll(); toast('Restaurado desde la hoja');
+        state = migrar(s); await persist(); closeSheet(); renderAll(); toast('Restaurado desde la hoja'); if (mxOn()) refreshMx({});
       } catch (e) { toast(e.message || 'No se pudo restaurar', true); }
     };
     $('#syOff', box).onclick = () => { sync.enabled = false; sync.dirty = false; sync.lastError = ''; saveSync(); renderSyncStatus(); drawSync(box); toast('Copia automática desactivada'); };
@@ -1310,13 +1323,302 @@ async function activateSync(url, clave, box) {
           <button class="btn" id="syOver">Sobrescribir la hoja con los datos de este móvil</button>
           <button class="btn" id="syCan">Cancelar</button>
         </div>`;
-      $('#syUse', box).onclick = async () => { state = info; await persist(); renderAll(); finish(); };
+      $('#syUse', box).onclick = async () => { state = migrar(info); await persist(); renderAll(); finish(); if (mxOn()) refreshMx({}); };
       $('#syOver', box).onclick = finish;
       $('#syCan', box).onclick = () => { sync = prev; drawSync(box); };
       return;
     }
     finish();
   } catch (e) { sync = prev; toast(e.message || 'No se pudo conectar', true); }
+}
+
+/* ---------- Maestros compartidos (clientes y productos) ----------
+   Se leen de un servicio privado (el Apps Script de la hoja «Maestro de clientes» en Drive › Apps › Maestros)
+   y se guardan en el móvil, así que funcionan sin conexión. Ventas solo lee y pide altas: nunca cambia
+   ni borra nada de los maestros. Cada cliente y producto guarda el ID de su ficha (C016, P008…). */
+let mx = { url: '', clave: '', data: null, fecha: null, lastFetch: null, lastError: '', avisar: false };
+let IX = null, mxRunning = false;
+const mxOn = () => !!(mx.url && mx.clave);
+const callMx = (accion, extra = {}) => postScript(mx.url, mx.clave, accion, extra);
+async function loadMx() { try { const s = await dbGet('mx'); if (s) mx = { ...mx, ...s }; } catch (_) { /* nada */ } IX = mx.data ? MX.indexar(mx.data) : null; }
+function saveMx() { dbSet('mx', mx).catch(() => {}); }
+const nuevoId = (pre) => pre + uid().slice(0, 8);
+const mxErr = (r, def) => (r.error === 'clave' ? 'La clave de los maestros no coincide con la del script' : (r.error || def));
+
+/* Altas: se apuntan en la cola (también sin conexión) y se envían en cuanto hay conexión. */
+function pedirAlta(c, tipo, ref, datos) { if (mxOn()) c.mxPend.push({ k: uid(), tipo, ref, datos }); }
+async function procesarAltas() {
+  for (const a of [...state.mxPend]) {
+    const r = await callMx('alta', { tipo: a.tipo, datos: a.datos, app: 'Ventas' });
+    if (!r.ok) throw new Error(mxErr(r, 'No se pudo dar de alta en el maestro'));
+    commit((c) => {
+      c.mxPend = c.mxPend.filter((x) => x.k !== a.k);
+      const ent = (a.tipo === 'cliente' ? c.clientes : c.productos).find((x) => x.id === a.ref);
+      if (ent && !ent.mid) { ent.mid = r.id; if (a.tipo === 'producto') ent.pres = a.datos.presentacion || ''; }
+    });
+  }
+}
+async function refreshMx({ auto = false, manual = false } = {}) {
+  if (!mxOn() || mxRunning) return;
+  if (!navigator.onLine) { if (manual) toast('Sin conexión: los maestros se actualizarán al volver', true); return; }
+  if (auto && !state.mxPend.length && mx.lastFetch && Date.now() - new Date(mx.lastFetch).getTime() < 30 * 60000) return;
+  mxRunning = true; renderMxStatus();
+  try {
+    await procesarAltas();
+    const r = await callMx('leer');
+    if (!r.ok) throw new Error(mxErr(r, 'No se pudieron leer los maestros'));
+    mx.data = { clientes: r.clientes || [], fincas: r.fincas || [], productos: r.productos || [] };
+    mx.fecha = r.fecha || null; mx.lastFetch = new Date().toISOString(); mx.lastError = '';
+    IX = MX.indexar(mx.data); saveMx();
+    aplicarMaestros(manual);
+  } catch (e) { mx.lastError = e.message || String(e); saveMx(); if (manual) toast(mx.lastError, true); }
+  finally { mxRunning = false; renderMxStatus(); }
+}
+/* Cambios sin riesgo (nombres, categorías, bajas, clientes nuevos del maestro) se aplican solos.
+   El primer enlace y unir fichas repetidas se enseñan antes para que los confirmes. */
+function aplicarMaestros(manual) {
+  if (!IX) return false;
+  const plan = MX.planVentas(state, IX);
+  if (!state.settings.mxEnlazado || plan.unirCli.length || plan.unirProd.length) {
+    mx.avisar = true; saveMx(); renderMxStatus();
+    if (manual) { if (sheetOpen) reopen(openEnlace); else openEnlace(); }
+    return manual;
+  }
+  mx.avisar = false; saveMx();
+  const prueba = structuredClone(state);
+  MX.aplicarVentas(prueba, plan, IX, { nuevoId });
+  if (JSON.stringify(prueba) !== JSON.stringify(state)) {
+    if (commit((c) => { MX.aplicarVentas(c, MX.planVentas(c, IX), IX, { nuevoId }); }) && manual) toast('Maestros actualizados');
+  } else if (manual) toast('Todo al día con los maestros');
+  return false;
+}
+function openEnlace() {
+  if (!IX) return;
+  const plan = MX.planVentas(state, IX);
+  const prueba = structuredClone(state);
+  const r = MX.aplicarVentas(prueba, plan, IX, { unir: true, nuevoId });
+  const cambios = [];
+  for (const c of state.clientes) { const n = prueba.clientes.find((x) => x.id === c.id); if (n && n.nombre !== c.nombre) cambios.push([c.nombre, n.nombre]); }
+  for (const p of state.productos) { const n = prueba.productos.find((x) => x.id === p.id); if (n && n.nombre !== p.nombre) cambios.push([p.nombre, n.nombre]); }
+  const cats = state.productos.filter((p) => { const n = prueba.productos.find((x) => x.id === p.id); return n && n.tipo !== p.tipo; }).length;
+  const unir = [
+    ...plan.unirCli.map((u) => [u.quita.map((q) => `${q.nombre} (${q.n} ${q.n === 1 ? 'venta' : 'ventas'})`).join(', '), IX.cli.get(u.mid).nombre]),
+    ...plan.unirProd.map((u) => [u.quita.map((q) => `${q.nombre} (${q.n} mov.)`).join(', '), prodName(u.queda, prueba)]),
+  ];
+  const sin = [...plan.sinCli.map((id) => cliName(id)), ...plan.sinProd.map((id) => prodName(id))];
+  const primera = !state.settings.mxEnlazado;
+  const body = openSheet(primera ? 'Enlazar con los maestros' : 'Cambios de los maestros', `
+    <p class="small" style="margin-top:0">Cada cliente y producto de Ventas queda unido a su ficha del maestro. Las ventas, cobros, stock, precios e importes no cambian.</p>
+    <div class="box">
+      <div><span>Clientes enlazados</span><b>${plan.cli.length}</b></div>
+      <div><span>Productos enlazados</span><b>${plan.prod.length}</b></div>
+      <div><span>Nombres que se igualan al maestro</span><b>${cambios.length}</b></div>
+      <div><span>Productos que pasan a las categorías de Stock fincas</span><b>${cats}</b></div>
+      <div><span>Clientes del maestro que se añaden</span><b>${r.nuevos}</b></div>
+      ${unir.length ? `<div><span>Fichas repetidas que se unen</span><b>${unir.length}</b></div>` : ''}
+      <div><span>Sin enlazar (los revisas tú)</span><b>${sin.length}</b></div>
+    </div>
+    ${unir.length ? `<h3>Se unen en una sola ficha</h3><div class="box">${unir.map(([a, b]) => `<div><span>${esc(a)}</span><b>→ ${esc(b)}</b></div>`).join('')}</div><p class="hint">Sus ventas y cobros pasan a la ficha que queda; no se borra ninguna venta.</p>` : ''}
+    ${cambios.length ? `<details class="more"><summary>${cambios.length === 1 ? 'Ver el nombre que cambia' : `Ver los ${cambios.length} nombres que cambian`}</summary><div class="box">${cambios.map(([a, b]) => `<div><span>${esc(a)}</span><b>→ ${esc(b)}</b></div>`).join('')}</div></details>` : ''}
+    ${sin.length ? `<details class="more" open><summary>Sin enlazar (${sin.length})</summary><div class="box">${sin.map((n) => `<div><span>${esc(n)}</span></div>`).join('')}</div><p class="hint">Después los enlazas o los das de alta en Ajustes → Maestros → Revisar sin enlazar.</p></details>` : ''}
+    <div class="actions" style="margin-top:16px">
+      <button class="btn" id="enBk">Guardar copia antes (recomendado)</button>
+      <button class="btn primary" id="enOk">Aplicar</button>
+      <button class="btn" id="enNo">Ahora no</button>
+    </div>`);
+  $('#enBk', body).onclick = shareOrDownloadBackup;
+  $('#enNo', body).onclick = closeSheet;
+  $('#enOk', body).onclick = () => {
+    if (commit((c) => { MX.aplicarVentas(c, MX.planVentas(c, IX), IX, { unir: true, nuevoId }); c.settings.mxEnlazado = true; })) {
+      mx.avisar = false; saveMx(); renderMxStatus(); closeSheet(); toast('Enlazado con los maestros');
+    }
+  };
+}
+
+/* Buscar o preparar un cliente a partir de un nombre escrito (evita duplicados con el maestro). */
+function clienteParaNombre(nombre, propio) {
+  const n = MX.norm(nombre);
+  const ex = state.clientes.find((c) => MX.norm(c.nombre) === n);
+  if (ex) return { id: ex.id };
+  const m = IX && MX.buscarCliente(IX, nombre);
+  if (m) {
+    const ex2 = state.clientes.find((c) => c.mid === m.id);
+    if (ex2) return { id: ex2.id };
+    return { nuevo: { id: nuevoId('c'), mid: m.id, nombre: m.nombre, propio: MX.esPropio(m), activo: !MX.deBaja(m) } };
+  }
+  return { nuevo: { id: nuevoId('c'), nombre: nombre.trim(), propio: !!propio, activo: true }, alta: { nombre: nombre.trim(), tipo: propio ? 'Propio' : 'Cliente', servicios: ['Productos'] } };
+}
+/* Opciones del desplegable de clientes: tus fincas, clientes de productos y el resto del maestro. */
+function cliOptions(sel, { soloActivos = true } = {}) {
+  const tiene = new Set(state.pedidos.map((p) => p.cli));
+  const vende = (c) => tiene.has(c.id) || !c.mid || !IX || (IX.cli.get(c.mid)?.servicios || []).some((s) => MX.norm(s) === 'productos');
+  const cs = state.clientes.filter((c) => !soloActivos || c.activo || c.id === sel).sort(byName);
+  const opt = (c) => `<option value="${c.id}" ${sel === c.id ? 'selected' : ''}>${esc(c.nombre)}${c.activo ? '' : ' (baja)'}</option>`;
+  const own = cs.filter((c) => c.propio), cli = cs.filter((c) => !c.propio && vende(c)), otros = cs.filter((c) => !c.propio && !vende(c));
+  return [['Tus fincas', own], ['Clientes', cli], ['Otros clientes del maestro', otros]].filter(([, xs]) => xs.length)
+    .map(([g, xs]) => `<optgroup label="${g}">${xs.map(opt).join('')}</optgroup>`).join('');
+}
+/* Opciones «producto del maestro + envase» para enlazar a mano. */
+function mxProdOptions(selMid, selPres) {
+  if (!IX) return '';
+  const ps = [...IX.prod.values()].sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'));
+  return ps.map((p) => {
+    const pres = p.presentaciones && p.presentaciones.length ? p.presentaciones : [''];
+    return pres.map((pr) => { const v = p.id + '|' + pr; return `<option value="${esc(v)}" ${selMid === p.id && (selPres || '') === pr ? 'selected' : ''}>${esc(MX.nombreProducto(p, pr))} · ${p.id}</option>`; }).join('');
+  }).join('');
+}
+
+/* Formulario común de producto nuevo (en Compras y en Stock). Con maestros: eliges producto y envase.
+   Si no está en el maestro, lo escribes y se pide el alta (queda en amarillo para que lo revises). */
+function npInit() { return { modo: IX ? 'mx' : 'libre', mid: '', pres: '', presOtra: '', nombre: '', cat: '', tipo: '', tarifa: '' }; }
+function npHTML(np) {
+  const tarifa = field('npR', 'Tarifa venta €', np.tarifa, { ph: 'precio normal' });
+  if (np.modo === 'mx') {
+    const m = np.mid ? IX.prod.get(np.mid) : null;
+    const grupos = [...CATEGORIAS, ...new Set([...IX.prod.values()].map((p) => p.categoria).filter((c) => !CATEGORIAS.includes(c)))];
+    const opts = grupos.map((g) => { const xs = [...IX.prod.values()].filter((p) => (p.categoria || '') === g && p.activo !== false).sort((a, b) => a.nombre.localeCompare(b.nombre, 'es')); return xs.length ? `<optgroup label="${esc(g || 'Sin categoría')}">${xs.map((p) => `<option value="${p.id}" ${np.mid === p.id ? 'selected' : ''}>${esc(p.nombre)}</option>`).join('')}</optgroup>` : ''; }).join('');
+    const pres = m ? (m.presentaciones || []) : [];
+    const otra = m && (!pres.length || np.pres === '__otra');
+    const nombre = m ? MX.nombreProducto(m, otra ? np.presOtra.trim() : np.pres) : '';
+    return `<label class="fld"><span>Producto del maestro</span><select id="npM"><option value="">Elige producto…</option>${opts}<option value="__libre">— No está en el maestro —</option></select></label>
+      ${m ? `<div class="grid2">${pres.length ? `<label class="fld"><span>Envase</span><select id="npP">${pres.map((x) => `<option value="${esc(x)}" ${np.pres === x ? 'selected' : ''}>${esc(x)}</option>`).join('')}<option value="__otra" ${np.pres === '__otra' ? 'selected' : ''}>Otro envase…</option></select></label>` : ''}
+        ${otra ? field('npO', pres.length ? 'Envase nuevo' : 'Envase', np.presOtra, { mode: 'text', ph: 'p. ej. E/20 L' }) : ''}${tarifa}</div>
+        <p class="hint" id="npH">Se llamará «${esc(nombre)}» · ${esc(m.categoria || 'sin categoría')}${otra && np.presOtra.trim() ? '. El envase nuevo se añade a su ficha del maestro.' : ''}</p>` : ''}`;
+  }
+  if (!IX) return `<label class="fld"><span>Nombre del producto nuevo</span><input id="npN" type="text" value="${esc(np.nombre)}" placeholder="Por ejemplo: Ironfeed 48 E/5 Kg" autocomplete="off"></label>
+    <div class="grid2"><label class="fld"><span>Tipo</span><select id="npC"><option value="">Elige…</option>${CATEGORIAS.map((c) => `<option ${np.cat === c ? 'selected' : ''}>${c}</option>`).join('')}</select></label>${tarifa}</div>`;
+  return `${IX ? '<button type="button" class="btn small" id="npVolver" style="margin-bottom:12px">← Elegir del maestro</button>' : ''}
+    <div class="grid2"><label class="fld"><span>Nombre (sin envase)</span><input id="npN" type="text" value="${esc(np.nombre)}" placeholder="Por ejemplo: Tarafol Gold" autocomplete="off"></label>${field('npO', 'Envase', np.presOtra, { mode: 'text', ph: 'p. ej. E/5 Kg' })}</div>
+    <div class="grid2"><label class="fld"><span>Categoría</span><select id="npC"><option value="">Elige…</option>${CATEGORIAS.map((c) => `<option ${np.cat === c ? 'selected' : ''}>${c}</option>`).join('')}</select></label>${tarifa}</div>
+    <p class="hint">${mxOn() ? 'Se pedirá el alta en el maestro de productos y quedará en amarillo para que la revises.' : ''}</p>`;
+}
+function npBind(box, np, redraw, onPick) {
+  const m = $('#npM', box);
+  if (m) m.onchange = (e) => { if (e.target.value === '__libre') { np.modo = 'libre'; np.mid = ''; } else { np.mid = e.target.value; const p = IX.prod.get(np.mid); np.pres = p && p.presentaciones && p.presentaciones.length ? p.presentaciones[0] : ''; np.presOtra = ''; onPick && onPick(p); } redraw(); };
+  const pp = $('#npP', box); if (pp) pp.onchange = (e) => { np.pres = e.target.value; redraw(); };
+  const v = $('#npVolver', box); if (v) v.onclick = () => { np.modo = 'mx'; redraw(); };
+  const bind = (sel, k) => { const el = $(sel, box); if (el) el.oninput = (e) => { np[k] = e.target.value; const h = $('#npH', box); if (h && k === 'presOtra' && np.mid) { const p = IX.prod.get(np.mid); h.textContent = `Se llamará «${MX.nombreProducto(p, np.presOtra.trim())}» · ${p.categoria || 'sin categoría'}${np.presOtra.trim() ? '. El envase nuevo se añade a su ficha del maestro.' : ''}`; } }; };
+  bind('#npN', 'nombre'); bind('#npO', 'presOtra'); bind('#npR', 'tarifa');
+  const c = $('#npC', box); if (c) c.onchange = (e) => { np.cat = e.target.value; };
+}
+/* Devuelve { prod, alta } o lanza un error con el motivo. */
+function npBuild(np, provId) {
+  const tarifa = String(np.tarifa).trim() ? parseNum(np.tarifa) : 0;
+  if (!(tarifa >= 0)) throw new Error('Revisa la tarifa');
+  const dup = (nombre) => state.productos.find((p) => MX.norm(p.nombre) === MX.norm(nombre));
+  if (np.modo === 'mx') {
+    const m = np.mid && IX.prod.get(np.mid); if (!m) throw new Error('Elige el producto del maestro');
+    const pres = (!m.presentaciones.length || np.pres === '__otra') ? np.presOtra.trim() : np.pres;
+    if ((!m.presentaciones.length || np.pres === '__otra') && !pres && m.presentaciones.length) throw new Error('Escribe el envase');
+    const ex = state.productos.find((p) => p.mid === m.id && MX.compacto(p.pres || '') === MX.compacto(pres));
+    if (ex) throw new Error(`«${ex.nombre}» ya existe: elígelo de la lista`);
+    const nombre = MX.nombreProducto(m, pres);
+    if (dup(nombre)) throw new Error('Ese producto ya existe: elígelo de la lista');
+    const nuevoEnvase = pres && !m.presentaciones.some((x) => MX.compacto(x) === MX.compacto(pres));
+    return { prod: { id: nuevoId('p'), mid: m.id, pres, nombre, tipo: m.categoria || '', subtipo: m.subtipo || '', prov: provId, tarifa: round(tarifa, 4), activo: true }, alta: nuevoEnvase ? { nombre: m.nombre, presentacion: pres } : null };
+  }
+  const base = np.nombre.trim(); if (!base) throw new Error('Escribe el nombre del producto');
+  const pres = IX ? np.presOtra.trim() : '';
+  const nombre = pres ? base + ' ' + pres : base;
+  if (dup(nombre)) throw new Error('Ese producto ya existe: elígelo de la lista');
+  if (!np.cat) throw new Error('Elige la categoría');
+  const r = IX && MX.buscarProducto(IX, nombre);
+  if (r) return { prod: { id: nuevoId('p'), mid: r.p.id, pres: r.pres, nombre: MX.nombreProducto(r.p, r.pres), tipo: r.p.categoria || np.cat, subtipo: r.p.subtipo || '', prov: provId, tarifa: round(tarifa, 4), activo: true }, alta: null, aviso: 'Ya estaba en el maestro: queda enlazado' };
+  return { prod: { id: nuevoId('p'), nombre, pres, tipo: np.cat, prov: provId, tarifa: round(tarifa, 4), activo: true }, alta: { nombre: base, presentacion: pres, categoria: np.cat, proveedor: provName(provId) } };
+}
+
+/* Revisión de lo que no se ha podido enlazar solo */
+function openSinEnlazar() {
+  if (!IX) return toast('Primero conecta los maestros', true);
+  const plan = MX.planVentas(state, IX);
+  const pend = new Set(state.mxPend.map((a) => a.ref));
+  const cliOpts = [...IX.cli.values()].sort((a, b) => a.nombre.localeCompare(b.nombre, 'es')).map((m) => `<option value="${m.id}">${esc(m.nombre)} · ${m.id}</option>`).join('');
+  const rowC = (c) => `<div class="grpbox"><div class="gh"><span><b>${esc(c.nombre)}</b> · cliente</span>${pend.has(c.id) ? '<span class="pill par">Alta pedida</span>' : ''}</div>
+    ${pend.has(c.id) ? '' : `<label class="fld"><span>Es esta ficha del maestro</span><select data-sc="${c.id}"><option value="">Elige…</option>${cliOpts}</select></label>
+    <div class="actions two"><button class="btn small" data-ec="${c.id}">Enlazar</button><button class="btn small" data-ac="${c.id}">Dar de alta en el maestro</button></div>`}</div>`;
+  const rowP = (p) => `<div class="grpbox"><div class="gh"><span><b>${esc(p.nombre)}</b> · producto</span>${pend.has(p.id) ? '<span class="pill par">Alta pedida</span>' : ''}</div>
+    ${pend.has(p.id) ? '' : `<label class="fld"><span>Es esta ficha del maestro</span><select data-sp="${p.id}"><option value="">Elige…</option>${mxProdOptions()}</select></label>
+    <div class="actions"><button class="btn small" data-ep="${p.id}">Enlazar</button></div>
+    <div class="grid2" style="margin-top:10px"><label class="fld"><span>Nombre (sin envase)</span><input data-pn="${p.id}" type="text" value="${esc(p.nombre)}" autocomplete="off"></label><label class="fld"><span>Envase</span><input data-pe="${p.id}" type="text" value="" placeholder="E/5 L" autocomplete="off"></label></div>
+    <div class="grid2" style="align-items:end"><label class="fld"><span>Categoría</span><select data-pc="${p.id}"><option value="">Elige…</option>${CATEGORIAS.map((c) => `<option ${p.tipo === c ? 'selected' : ''}>${c}</option>`).join('')}</select></label><button class="btn small" data-ap="${p.id}" style="margin-bottom:14px">Dar de alta</button></div>`}</div>`;
+  const cs = plan.sinCli.map((id) => cliById(id)).filter(Boolean), ps = plan.sinProd.map((id) => prodById(id)).filter(Boolean);
+  const body = openSheet('Sin enlazar', cs.length + ps.length
+    ? `<p class="small" style="margin-top:0">No se han reconocido por nombre ni alias. Enlázalos a su ficha o pide el alta (quedará en amarillo en el maestro).</p>${cs.map(rowC).join('')}${ps.map(rowP).join('')}`
+    : '<div class="okline">✓ Todo está enlazado con los maestros</div>');
+  const again = () => reopen(openSinEnlazar);
+  body.onclick = (e) => {
+    const b = e.target.closest('button'); if (!b) return;
+    if (b.dataset.ec) {
+      const mid = body.querySelector(`[data-sc="${b.dataset.ec}"]`).value; if (!mid) return toast('Elige la ficha del maestro', true);
+      if (commit((c) => { cliById(b.dataset.ec, c).mid = mid; })) { if (!aplicarMaestros(true)) again(); }
+    } else if (b.dataset.ac) {
+      const c0 = cliById(b.dataset.ac);
+      if (commit((c) => pedirAlta(c, 'cliente', c0.id, { nombre: c0.nombre, tipo: c0.propio ? 'Propio' : 'Cliente', servicios: ['Productos'] }))) { toast('Alta pedida'); refreshMx({ manual: false }); again(); }
+    } else if (b.dataset.ep) {
+      const v = body.querySelector(`[data-sp="${b.dataset.ep}"]`).value; if (!v) return toast('Elige la ficha del maestro', true);
+      const [mid, pres] = [v.slice(0, v.indexOf('|')), v.slice(v.indexOf('|') + 1)];
+      if (commit((c) => { const p = prodById(b.dataset.ep, c); p.mid = mid; p.pres = pres; })) { if (!aplicarMaestros(true)) again(); }
+    } else if (b.dataset.ap) {
+      const id = b.dataset.ap;
+      const nombre = body.querySelector(`[data-pn="${id}"]`).value.trim(), pres = body.querySelector(`[data-pe="${id}"]`).value.trim(), cat = body.querySelector(`[data-pc="${id}"]`).value;
+      if (!nombre) return toast('Escribe el nombre', true);
+      if (!cat) return toast('Elige la categoría', true);
+      const p0 = prodById(id);
+      if (commit((c) => { prodById(id, c).tipo = cat; pedirAlta(c, 'producto', id, { nombre, presentacion: pres, categoria: cat, proveedor: provName(p0.prov) }); })) { toast('Alta pedida'); refreshMx({}); again(); }
+    }
+  };
+}
+
+function mxStatusText() {
+  if (!mxOn()) return '';
+  if (mxRunning) return 'Leyendo los maestros…';
+  const pend = state && state.mxPend.length ? ` · ${state.mxPend.length} ${state.mxPend.length === 1 ? 'alta pendiente' : 'altas pendientes'} de enviar` : '';
+  if (mx.lastError) return 'Maestros: ' + mx.lastError + pend;
+  if (!mx.data) return 'Maestros: todavía sin leer' + pend;
+  return `Maestros: ${mx.data.clientes.length} clientes · ${mx.data.fincas.length} fincas · ${mx.data.productos.length} productos · leídos ${ago(mx.lastFetch)}${pend}`;
+}
+function renderMxStatus() {
+  const el = $('#mxStatus');
+  if (el) { el.hidden = !(mxOn() && mx.avisar && IX); el.textContent = '⚠ Maestros: hay cambios para revisar · pulsa aquí'; }
+  const l = $('#mxLine'); if (l) l.textContent = mxStatusText();
+}
+function drawMx(box) {
+  if (mxOn()) {
+    const sin = IX ? (() => { const p = MX.planVentas(state, IX); return p.sinCli.length + p.sinProd.length; })() : 0;
+    box.innerHTML = `
+      <p class="small" id="mxLine">${esc(mxStatusText())}</p>
+      <p class="small">Clientes y productos salen de los maestros de Drive (Apps › Maestros). Se guardan en el móvil y funcionan sin conexión. Lo nuevo que des de alta aquí entra en el maestro en amarillo para que lo revises.</p>
+      <div class="actions">
+        <button class="btn primary" id="mxNow">Actualizar ahora</button>
+        ${IX ? `<button class="btn" id="mxRev">Revisar sin enlazar${sin ? ` (${sin})` : ''}</button>` : ''}
+        ${mx.avisar && IX ? '<button class="btn" id="mxEnl">Ver cambios pendientes</button>' : ''}
+        <button class="btn danger" id="mxOff">Desconectar</button>
+      </div>`;
+    $('#mxNow', box).onclick = () => refreshMx({ manual: true });
+    const rv = $('#mxRev', box); if (rv) rv.onclick = () => reopen(openSinEnlazar);
+    const en = $('#mxEnl', box); if (en) en.onclick = () => reopen(openEnlace);
+    $('#mxOff', box).onclick = () => { mx = { ...mx, url: '', clave: '', lastError: '', avisar: false }; saveMx(); renderMxStatus(); drawMx(box); toast('Maestros desconectados (lo enlazado se mantiene)'); };
+  } else {
+    box.innerHTML = `
+      <p class="small">Conecta la app con los maestros de clientes y productos de tu Drive. Necesita configurar una vez el script de los maestros (pasos en el README).</p>
+      <label class="fld"><span>Dirección del script de maestros (termina en /exec)</span><input id="mxU" type="url" value="${esc(mx.url)}" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off"></label>
+      <label class="fld"><span>Clave</span><input id="mxK" type="password" value="${esc(mx.clave)}" autocomplete="off"></label>
+      <div class="actions"><button class="btn primary" id="mxOn">Probar y conectar</button></div>`;
+    $('#mxOn', box).onclick = async () => {
+      const url = $('#mxU', box).value.trim(), clave = $('#mxK', box).value.trim();
+      if (!/^https:\/\/script\.google\.com\/macros\/s\/[^/\s]+\/exec\/?$/.test(url)) return toast('La dirección debe ser la de la aplicación web del script y terminar en /exec', true);
+      if (!clave) return toast('Escribe la clave', true);
+      if (url === sync.url) return toast('Esa es la dirección de la copia de Ventas: aquí va la del script de maestros', true);
+      try {
+        const r = await postScript(url, clave, 'ping');
+        if (!r.ok) throw new Error(mxErr(r, 'El script no responde'));
+        mx.url = url; mx.clave = clave; mx.lastError = ''; saveMx();
+        toast('Conectado. Leyendo los maestros…');
+        drawMx(box);
+        refreshMx({ manual: true });
+      } catch (e) { toast(e.message || 'No se pudo conectar', true); }
+    };
+  }
 }
 
 /* ---------- Ajustes y copia de seguridad ---------- */
@@ -1339,6 +1641,9 @@ function openSettings() {
   const body = openSheet('Ajustes', `
     <h3 style="margin-top:4px">Clientes, productos y proveedores</h3>
     <div class="actions three"><button class="btn small" id="aCli">Clientes</button><button class="btn small" id="aPro">Productos</button><button class="btn small" id="aPrv">Proveedores</button></div>
+    <h3>Maestros de clientes y productos</h3>
+    <div id="mxBox"></div>
+    <div class="sep"></div>
     <h3>Margen en las ventas a tus fincas</h3>
     <div class="inline-set"><span>Precio medio +</span><input id="aMg" type="text" inputmode="decimal" value="${fmtIn(margenPropio() * 100, 2)}"><span>%</span></div>
     <div class="sep"></div>
@@ -1352,7 +1657,7 @@ function openSettings() {
       <label class="btn" style="display:grid;place-items:center;cursor:pointer">Restaurar desde fichero<input id="sRs" type="file" accept="application/json,.json" hidden></label>
     </div>
     <div class="sep"></div>
-    <p class="small">Ventas · FG Agro v${APP_VERSION} · datos de partida cargados desde Gestion_Ventas_3.0.xlsx.</p>`);
+    <p class="small">Ventas · FG Agro v${APP_VERSION}. La app no lleva datos dentro: en un móvil nuevo se restaura desde la hoja de Google o desde un fichero de copia.</p>`);
   $('#aCli', body).onclick = () => reopen(openClientes);
   $('#aPro', body).onclick = () => { closeSheet(); ui.tab = 'stock'; ui.stockSeg = 'stock'; ui.stockAll = true; renderAll(); };
   $('#aPrv', body).onclick = () => reopen(openProveedores);
@@ -1362,6 +1667,7 @@ function openSettings() {
     commit((c) => { c.settings.margenPropio = round(n / 100, 4); }); toast(`Tus fincas: precio medio + ${nf(n, 0, 2)} %`);
   };
   drawSync($('#syncBox', body));
+  drawMx($('#mxBox', body));
   $('#sBk', body).onclick = shareOrDownloadBackup;
   $('#sRs', body).onchange = async (e) => {
     const file = e.target.files[0]; if (!file) return;
@@ -1370,7 +1676,7 @@ function openSettings() {
       const s = j && j.state;
       if (!validState(s)) throw new Error('El fichero no es una copia de la app de Ventas');
       if (!confirm(`Se reemplazarán todos los datos actuales por los de la copia (${stateInfo(s)}). ¿Continuar?`)) return;
-      state = s; await persist(); closeSheet(); renderAll(); toast('Copia restaurada');
+      state = migrar(s); await persist(); closeSheet(); renderAll(); toast('Copia restaurada'); if (mxOn()) refreshMx({});
     } catch (err) { toast(err.message || 'No se pudo leer la copia', true); }
     e.target.value = '';
   };
@@ -1393,7 +1699,7 @@ function renderAll() {
   const nd = deudas().cli.length, badge = $('#deudaBadge');
   badge.hidden = !nd; badge.textContent = nd;
   $('#fab').hidden = !t.fab; if (t.fab) $('#fabLabel').textContent = t.fab;
-  renderSyncStatus();
+  renderSyncStatus(); renderMxStatus();
   t.render();
 }
 
@@ -1408,20 +1714,24 @@ async function init() {
   };
   await loadSync();
   $('#syncStatus').onclick = openSettings;
-  window.addEventListener('online', () => { if (sync.dirty) runSync(); else renderSyncStatus(); });
+  $('#mxStatus').onclick = () => openEnlace();
+  window.addEventListener('online', () => { if (sync.dirty) runSync(); else renderSyncStatus(); if (mxOn() && state && state.mxPend.length) refreshMx({ auto: true }); });
   window.addEventListener('offline', renderSyncStatus);
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { if (sync.dirty) runSync(); if (state && !sheetOpen) renderAll(); } });
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { if (sync.dirty) runSync(); if (state && !sheetOpen) renderAll(); if (mxOn()) refreshMx({ auto: true }); } });
   setInterval(renderSyncStatus, 60000);
   try {
     let s = await dbGet('state');
-    if (!s) { s = seedState(); await dbSet('state', s); }
-    state = s;
+    if (!s) { s = emptyState(); await dbSet('state', s); }
+    else if (!s.v || s.v < 2) { migrar(s); await dbSet('state', s); }
+    state = migrar(s);
   } catch (e) {
-    state = seedState();
+    state = emptyState();
     toast('Este navegador no permite guardar datos: lo que anotes se perderá al cerrar', true);
   }
+  await loadMx();
   renderAll();
   if (syncOn() && sync.dirty) setTimeout(runSync, 1500);
+  if (mxOn()) setTimeout(() => refreshMx({ auto: true }), 2500);
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 }
