@@ -40,6 +40,14 @@
     return { p: mejor, pres: resto };
   }
 
+  /* Fincas: varias se llaman igual en clientes distintos, así que se busca con un filtro (p. ej. solo las propias). */
+  function buscarFinca(ix, nombre, filtro = () => true) {
+    const k = norm(nombre);
+    for (const f of ix.fin.values()) if (filtro(f) && norm(f.nombre) === k) return f;
+    for (const f of ix.fin.values()) if (filtro(f) && (f.alias || []).some((a) => norm(a) === k)) return f;
+    return null;
+  }
+
   const nombreProducto = (p, pres) => (pres ? p.nombre + ' ' + pres : p.nombre);
   const esPropio = (c) => norm(c.tipo) === 'propio';
   const deBaja = (c) => norm(c.estado) === 'baja';
@@ -135,6 +143,6 @@
     return r;
   }
 
-  const api = { norm, compacto, indexar, buscarCliente, buscarProducto, nombreProducto, esPropio, deBaja, planVentas, aplicarVentas };
+  const api = { norm, compacto, indexar, buscarCliente, buscarProducto, buscarFinca, nombreProducto, esPropio, deBaja, planVentas, aplicarVentas };
   if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.MX = api;
 })(typeof window !== 'undefined' ? window : globalThis);

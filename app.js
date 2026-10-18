@@ -2,7 +2,7 @@
 /* Ventas · FG Agro — ventas por pedido, compras, stock a precio medio, tarifa, deudas y comisiones.
    Todo se guarda en el propio móvil (IndexedDB) y funciona sin conexión. */
 
-const APP_VERSION = '1.1.0';
+const APP_VERSION = '1.2.0';
 const CATEGORIAS = ['Fertilizantes', 'Fitosanitarios', 'Herbicidas', 'Bioestimulantes']; // las de Stock fincas (no se tocan)
 
 /* ---------- Utilidades ---------- */
@@ -487,7 +487,7 @@ function openPedido(orig, preCli) {
       </div>
       ${newCli.on ? `<div class="grid2" style="align-items:end"><label class="fld"><span>Nombre del cliente nuevo</span><input id="pCN" type="text" value="${esc(newCli.nombre)}" autocomplete="off"></label>
         <button type="button" class="switch" id="pCP" role="switch" aria-checked="${newCli.propio}"><span>Finca propia</span><i></i></button></div>` : ''}
-      ${isOwn() ? `<p class="hint">Finca propia: el precio propuesto es el precio medio + ${pctf(margenPropio())}. Queda pendiente hasta que lo marques cobrado.</p>` : ''}
+      ${isOwn() ? `<p class="hint">Finca propia: el precio propuesto es el precio medio + ${pctf(margenPropio())}. Entra sola en Gestión fincas y entonces se marca como pasada.</p>` : ''}
       <div class="lines" id="pL">${f.lineas.map(lineHTML).join('')}</div>
       <div class="addrow"><button type="button" class="btn" id="pAdd">+ Producto</button><button type="button" class="btn" id="pAddC">+ Otro concepto</button></div>
       <div class="box" id="pTot"></div>
@@ -847,7 +847,7 @@ function renderDeudas() {
     ${d.cli.length ? `<div class="actions two" style="margin-bottom:12px"><button class="btn small" id="dTxt">Listado en texto</button><button class="btn small" id="dPdf">Listado en PDF</button></div>` : ''}
     <h3 style="margin-top:4px">Clientes</h3>
     ${d.cli.length ? `<ul class="list" id="dList">${d.cli.map(row).join('')}</ul>` : '<div class="okline">✓ Ningún cliente te debe nada</div>'}
-    <h3>Tus fincas <span class="mini">(pendiente de pasar a la app de stock de fincas)</span></h3>
+    <h3>Tus fincas <span class="mini">(pendiente de entrar en Gestión fincas)</span></h3>
     ${d.own.length ? `<ul class="list" id="dOwn">${d.own.map(row).join('')}</ul>` : '<div class="okline">✓ Todo pasado y marcado</div>'}
     <h3>Últimos cobros</h3>
     ${(() => { const cs = state.cobros.filter((c) => !c.hist).sort((a, b) => b.fecha.localeCompare(a.fecha) || b.ts - a.ts).slice(0, 8); return cs.length ? `<ul class="list" id="dCob">${cs.map((c) => `<li><button class="row" data-c="${c.cli}"><div class="main"><div class="name">${esc(cliName(c.cli))}</div><div class="sub">${fmtDate(c.fecha)} · ${esc(c.nota || '')}</div></div><div class="side"><b>${eur(cobroImp(c))}</b></div></button></li>`).join('')}</ul>` : '<p class="small">Aún no has registrado cobros en la app.</p>'; })()}
@@ -1621,6 +1621,69 @@ function drawMx(box) {
   }
 }
 
+/* ---------- Gestión fincas: confirma las ventas a tus fincas ----------
+   Gestión fincas recoge sola las ventas a tus fincas como entradas. Aquí se lee su copia (su script de
+   Google, acción «estado») y, cuando todas las líneas de un pedido ya han entrado allí, el pedido se
+   marca como pasado (cobrado). Así «Tus fincas pendiente» solo muestra lo que aún no ha llegado. */
+let gf = { url: '', clave: '', lastFetch: null, lastError: '' };
+let gfRunning = false;
+const gfOn = () => !!(gf.url && gf.clave);
+async function loadGf() { try { const s = await dbGet('gf'); if (s) gf = { ...gf, ...s }; } catch (_) { /* nada */ } }
+function saveGf() { dbSet('gf', gf).catch(() => {}); }
+async function refreshGf({ auto = false, manual = false } = {}) {
+  if (!gfOn() || gfRunning) return;
+  if (!navigator.onLine) { if (manual) toast('Sin conexión: se comprobará al volver', true); return; }
+  if (auto && gf.lastFetch && Date.now() - new Date(gf.lastFetch).getTime() < 15 * 60000) return;
+  gfRunning = true; renderGfLine();
+  try {
+    const r = await postScript(gf.url, gf.clave, 'estado');
+    if (!r.ok) throw new Error(r.error === 'clave' ? 'La clave no coincide con la del script de Gestión fincas' : r.error === 'sin copia' ? 'La hoja de Gestión fincas aún no tiene copia' : (r.error || 'No se pudo leer Gestión fincas'));
+    const gs = JSON.parse(r.estado);
+    const vks = new Set((gs.entradas || []).filter((e) => e.vk).map((e) => e.vk));
+    const listos = state.pedidos.filter((p) => cliById(p.cli)?.propio && pendOf(p) > EPS && p.lineas.some((l) => l.prod) && p.lineas.filter((l) => l.prod).every((l) => vks.has(p.id + '|' + l.k)));
+    gf.lastFetch = new Date().toISOString(); gf.lastError = '';
+    if (listos.length) {
+      const imp = listos.map((p) => [p.id, p.cli, pendOf(p)]);
+      if (commit((c) => { imp.forEach(([pid, cli, v]) => c.cobros.push({ id: uid(), ts: Date.now(), fecha: todayISO(), cli, aplic: { [pid]: v }, nota: 'Pasado a Gestión fincas', hist: false })); })) toast(`${listos.length} ${listos.length === 1 ? 'venta a tus fincas pasada' : 'ventas a tus fincas pasadas'} a Gestión fincas`);
+    } else if (manual) toast('Nada nuevo: lo pendiente aún no ha entrado en Gestión fincas');
+  } catch (e) { gf.lastError = e.message || String(e); if (manual) toast(gf.lastError, true); }
+  finally { gfRunning = false; saveGf(); renderGfLine(); }
+}
+function gfText() {
+  if (!gfOn()) return '';
+  if (gfRunning) return 'Comprobando Gestión fincas…';
+  if (gf.lastError) return 'Gestión fincas: ' + gf.lastError;
+  return 'Gestión fincas conectada · comprobado ' + ago(gf.lastFetch);
+}
+function renderGfLine() { const l = $('#gfLine'); if (l) l.textContent = gfText(); }
+function drawGf(box) {
+  if (gfOn()) {
+    box.innerHTML = `
+      <p class="small" id="gfLine">${esc(gfText())}</p>
+      <p class="small">Las ventas a tus fincas entran solas en Gestión fincas. Cuando han entrado, aquí se marcan como pasadas y salen de «Tus fincas pendiente».</p>
+      <div class="actions"><button class="btn primary" id="gfNow">Comprobar ahora</button><button class="btn danger" id="gfOff">Desconectar</button></div>`;
+    $('#gfNow', box).onclick = () => refreshGf({ manual: true });
+    $('#gfOff', box).onclick = () => { gf = { ...gf, url: '', clave: '', lastError: '' }; saveGf(); drawGf(box); toast('Gestión fincas desconectada'); };
+  } else {
+    box.innerHTML = `
+      <p class="small">Para que las ventas a tus fincas se marquen solas como pasadas. Usa la dirección y la clave del script de la hoja de Gestión fincas (las de su copia automática en Google Sheets).</p>
+      <label class="fld"><span>Dirección del script de Gestión fincas (termina en /exec)</span><input id="gfU" type="url" value="${esc(gf.url)}" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off"></label>
+      <label class="fld"><span>Clave</span><input id="gfK" type="password" value="${esc(gf.clave)}" autocomplete="off"></label>
+      <div class="actions"><button class="btn primary" id="gfOn">Probar y conectar</button></div>`;
+    $('#gfOn', box).onclick = async () => {
+      const url = $('#gfU', box).value.trim(), clave = $('#gfK', box).value.trim();
+      if (!/^https:\/\/script\.google\.com\/macros\/s\/[^/\s]+\/exec\/?$/.test(url)) return toast('La dirección debe terminar en /exec', true);
+      if (!clave) return toast('Escribe la clave', true);
+      if (url === sync.url || url === mx.url) return toast('Esa dirección es de otro script: aquí va la de la hoja de Gestión fincas', true);
+      try {
+        const r = await postScript(url, clave, 'ping');
+        if (!r.ok) throw new Error(r.error === 'clave' ? 'La clave no coincide con la del script de Gestión fincas' : (r.error || 'El script no responde'));
+        gf.url = url; gf.clave = clave; gf.lastError = ''; saveGf(); drawGf(box); toast('Gestión fincas conectada'); refreshGf({ manual: true });
+      } catch (e) { toast(e.message || 'No se pudo conectar', true); }
+    };
+  }
+}
+
 /* ---------- Ajustes y copia de seguridad ---------- */
 function download(name, text, type) {
   const url = URL.createObjectURL(new Blob([text], { type }));
@@ -1646,6 +1709,8 @@ function openSettings() {
     <div class="sep"></div>
     <h3>Margen en las ventas a tus fincas</h3>
     <div class="inline-set"><span>Precio medio +</span><input id="aMg" type="text" inputmode="decimal" value="${fmtIn(margenPropio() * 100, 2)}"><span>%</span></div>
+    <h3 style="margin-top:16px">Ventas a tus fincas → Gestión fincas</h3>
+    <div id="gfBox"></div>
     <div class="sep"></div>
     <h3>Copia automática en Google Sheets</h3>
     <div id="syncBox"></div>
@@ -1668,6 +1733,7 @@ function openSettings() {
   };
   drawSync($('#syncBox', body));
   drawMx($('#mxBox', body));
+  drawGf($('#gfBox', body));
   $('#sBk', body).onclick = shareOrDownloadBackup;
   $('#sRs', body).onchange = async (e) => {
     const file = e.target.files[0]; if (!file) return;
@@ -1717,7 +1783,7 @@ async function init() {
   $('#mxStatus').onclick = () => openEnlace();
   window.addEventListener('online', () => { if (sync.dirty) runSync(); else renderSyncStatus(); if (mxOn() && state && state.mxPend.length) refreshMx({ auto: true }); });
   window.addEventListener('offline', renderSyncStatus);
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { if (sync.dirty) runSync(); if (state && !sheetOpen) renderAll(); if (mxOn()) refreshMx({ auto: true }); } });
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { if (sync.dirty) runSync(); if (state && !sheetOpen) renderAll(); if (mxOn()) refreshMx({ auto: true }); if (gfOn()) refreshGf({ auto: true }); } });
   setInterval(renderSyncStatus, 60000);
   try {
     let s = await dbGet('state');
@@ -1728,10 +1794,10 @@ async function init() {
     state = emptyState();
     toast('Este navegador no permite guardar datos: lo que anotes se perderá al cerrar', true);
   }
-  await loadMx();
+  await loadMx(); await loadGf();
   renderAll();
   if (syncOn() && sync.dirty) setTimeout(runSync, 1500);
-  if (mxOn()) setTimeout(() => refreshMx({ auto: true }), 2500);
+  if (mxOn() || gfOn()) setTimeout(async () => { if (mxOn()) await refreshMx({ auto: true }); if (gfOn()) refreshGf({ auto: true }); }, 2500);
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 }

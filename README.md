@@ -14,7 +14,7 @@ App para el móvil Android que sustituye a `Gestion_Ventas_3.0.xlsx`: ventas por
 ## Reglas de cálculo
 - **Coste de cada venta:** precio medio del producto en el momento de guardarla. Queda congelado: cambiar compras después no modifica ventas ya hechas. El histórico conserva el coste del lote del Excel.
 - **Precio medio:** (importe de todas las compras − coste de todo lo vendido) ÷ unidades en stock.
-- **Tus fincas** (el cliente de tipo «Propio» en el maestro): precio propuesto = precio medio + margen (5 % por defecto, en Ajustes). Quedan pendientes hasta que las marques cobradas al pasarlas a la app de stock de fincas.
+- **Tus fincas** (el cliente de tipo «Propio» en el maestro): precio propuesto = precio medio + margen (5 % por defecto, en Ajustes). Entran solas en Gestión fincas como entradas; cuando han entrado, Ventas las marca como pasadas (Ajustes → Ventas a tus fincas → Gestión fincas).
 - **Cobros:** si bajas el importe de un pedido ya cobrado, lo sobrante se aplica a las otras deudas del cliente.
 
 ## Maestros de clientes y productos
