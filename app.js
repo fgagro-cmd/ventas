@@ -2,7 +2,7 @@
 /* Ventas · FG Agro — ventas por pedido, compras, stock a precio medio, tarifa, deudas y comisiones.
    Todo se guarda en el propio móvil (IndexedDB) y funciona sin conexión. */
 
-const APP_VERSION = '1.2.0';
+const APP_VERSION = '1.2.1';
 const CATEGORIAS = ['Fertilizantes', 'Fitosanitarios', 'Herbicidas', 'Bioestimulantes']; // las de Stock fincas (no se tocan)
 
 /* ---------- Utilidades ---------- */

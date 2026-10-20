@@ -25,7 +25,14 @@
     return ix;
   }
 
-  const buscarCliente = (ix, nombre) => ix.cliN.get(norm(nombre)) || null;
+  /* Fichas repetidas: en el maestro, la que sobra lleva Estado «Unido a C0xx» y todo pasa a esa otra ficha */
+  const unidoA = (m) => { const r = /^unido a\s+([a-z]\d+)/i.exec(String((m && m.estado) || '').trim()); return r ? r[1].toUpperCase() : null; };
+  function destino(ix, m) {
+    let x = m, n = 0;
+    while (x && unidoA(x) && n++ < 5) { const y = ix.cli.get(unidoA(x)); if (!y) break; x = y; }
+    return x || null;
+  }
+  const buscarCliente = (ix, nombre) => destino(ix, ix.cliN.get(norm(nombre)) || null);
 
   /* Un producto de una app puede llevar la presentación pegada al nombre («Complex AID E/10 L»). */
   function buscarProducto(ix, nombre) {
@@ -50,7 +57,7 @@
 
   const nombreProducto = (p, pres) => (pres ? p.nombre + ' ' + pres : p.nombre);
   const esPropio = (c) => norm(c.tipo) === 'propio';
-  const deBaja = (c) => norm(c.estado) === 'baja';
+  const deBaja = (c) => norm(c.estado) === 'baja' || !!unidoA(c);
 
   /* Plan de enlace de la app Ventas con los maestros (no cambia nada: solo dice qué se haría). */
   function planVentas(st, ix) {
@@ -58,7 +65,7 @@
     const usos = (cid) => st.pedidos.filter((p) => p.cli === cid).length;
     const porMid = new Map();
     for (const c of st.clientes) {
-      const m = c.mid ? ix.cli.get(c.mid) : buscarCliente(ix, c.nombre);
+      const m = c.mid ? destino(ix, ix.cli.get(c.mid)) : buscarCliente(ix, c.nombre);
       if (!m) { if (!c.mid) plan.sinCli.push(c.id); continue; }
       plan.cli.push({ id: c.id, mid: m.id });
       if (!porMid.has(m.id)) porMid.set(m.id, []);
@@ -70,7 +77,7 @@
       plan.unirCli.push({ mid, queda: orden[0].id, quita: orden.slice(1).map((c) => ({ id: c.id, nombre: c.nombre, n: usos(c.id) })) });
     }
     const enlazados = new Set(porMid.keys());
-    for (const m of ix.cli.values()) if (!enlazados.has(m.id) && norm(m.tipo) !== 'proveedor') plan.nuevos.push(m.id);
+    for (const m of ix.cli.values()) if (!enlazados.has(m.id) && norm(m.tipo) !== 'proveedor' && !unidoA(m)) plan.nuevos.push(m.id);
 
     const usosP = (pid) => st.compras.filter((c) => c.prod === pid).length + st.pedidos.reduce((t, o) => t + o.lineas.filter((l) => l.prod === pid).length, 0);
     const porClave = new Map();
@@ -143,6 +150,6 @@
     return r;
   }
 
-  const api = { norm, compacto, indexar, buscarCliente, buscarProducto, buscarFinca, nombreProducto, esPropio, deBaja, planVentas, aplicarVentas };
+  const api = { norm, compacto, indexar, unidoA, destino, buscarCliente, buscarProducto, buscarFinca, nombreProducto, esPropio, deBaja, planVentas, aplicarVentas };
   if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.MX = api;
 })(typeof window !== 'undefined' ? window : globalThis);
