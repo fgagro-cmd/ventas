@@ -8,6 +8,7 @@ App para el móvil Android que sustituye a `Gestion_Ventas_3.0.xlsx`: ventas por
 - **Ventas:** un pedido por cliente y fecha con varias líneas. El precio sale de la tarifa (o precio medio + 5 % si es una finca propia) y se puede cambiar. Bloquea vender más de lo que hay en stock. Admite líneas de «otro concepto» (portes, abonos…) que no mueven stock.
 - **Compras:** cada compra recalcula el precio medio. Una cantidad negativa sirve para corregir el inventario. Desde aquí se dan de alta productos y proveedores nuevos.
 - **Stock y tarifa:** existencias, precio medio y valor por producto; la tarifa se edita directamente en la lista.
+- **Catálogo y avisos de stock (1.3.0):** cada producto está «En catálogo» o «Descatalogado» (interruptor en su ficha). Los descatalogados no salen al comprar ni avisan, pero se pueden vender hasta agotar su stock. Cada producto en catálogo puede llevar un **stock mínimo**: cuando el stock llega a ese mínimo (sin mínimo, a 0) queda «Por reponer». Se ve en el globo de la pestaña Stock, en Inicio, en el filtro «Por reponer», al guardar una venta y en la hoja (columnas «Stock mínimo» y «Por reponer»), que lee la Vista única.
 - **Deudas:** quién te debe, qué artículos y cuánto. Cobros a cuenta que saldan primero los pedidos más antiguos. Listado por cliente o total en texto (WhatsApp) o PDF.
 - **Comisiones:** porcentaje o importe fijo, con cobrada/pendiente y sumatorio aparte.
 

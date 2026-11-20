@@ -2,7 +2,7 @@
 /* Ventas · FG Agro — ventas por pedido, compras, stock a precio medio, tarifa, deudas y comisiones.
    Todo se guarda en el propio móvil (IndexedDB) y funciona sin conexión. */
 
-const APP_VERSION = '1.2.2';
+const APP_VERSION = '1.3.0';
 const CATEGORIAS = ['Fertilizantes', 'Fitosanitarios', 'Herbicidas', 'Bioestimulantes']; // las de Stock fincas (no se tocan)
 
 /* ---------- Utilidades ---------- */
@@ -131,6 +131,14 @@ function estadoOf(p, st = state) {
 }
 const ESTADO = { cob: ['cob', 'Cobrado'], par: ['par', 'Parcial'], pen: ['pen', 'Pendiente'] };
 const cobroImp = (c) => round(Object.values(c.aplic).reduce((t, v) => t + v, 0), 2);
+
+/* Catálogo y stock mínimo (1.3.0).
+   p.activo = «En catálogo». Un producto descatalogado no sale al comprar ni avisa, pero se puede vender hasta agotar su stock.
+   p.min = stock mínimo (en las unidades del producto). Vacío o 0 = avisa al llegar a 0.
+   Por reponer = en catálogo y con el stock en su mínimo o por debajo. */
+const minOf = (p) => (typeof p.min === 'number' && p.min > 0 ? p.min : 0);
+const porReponer = (p, st = state) => !!p.activo && stockOf(p.id, st).qty <= minOf(p) + 1e-9;
+const listaReponer = (st = state) => st.productos.filter((p) => porReponer(p, st)).sort(byName);
 
 /* Stock de un producto sin contar un pedido concreto (para editarlo). */
 function stockSin(prod, pedido, st = state) {
@@ -264,7 +272,7 @@ function deudas() {
 }
 
 /* ---------- UI general ---------- */
-const ui = { tab: 'inicio', dashY: thisYear(), rank: 'imp', rankWho: 'prod', ventY: thisYear(), ventCli: '', ventQ: '', compY: thisYear(), compQ: '', stockSeg: 'stock', stockQ: '', stockTipo: '', stockAll: false, comY: thisYear() };
+const ui = { tab: 'inicio', dashY: thisYear(), rank: 'imp', rankWho: 'prod', ventY: thisYear(), ventCli: '', ventQ: '', compY: thisYear(), compQ: '', stockSeg: 'stock', stockVer: 'stock', stockQ: '', stockTipo: '', stockAll: false, comY: thisYear() };
 let toastTimer;
 function toast(msg, err = false) {
   const t = $('#toast'); t.textContent = msg; t.className = 'show' + (err ? ' err' : '');
@@ -358,7 +366,7 @@ function headInicio() {
   </div>`;
 }
 function renderInicio() {
-  const r = resumenAnio(ui.dashY), vs = valorStock(), dd = deudas();
+  const r = resumenAnio(ui.dashY), vs = valorStock(), dd = deudas(), nRep = listaReponer().length;
   const s1 = css('--s1'), s2 = css('--s2');
   const ser1 = [{ name: 'Ventas', color: s1, values: r.mes.map((m) => round(m.imp, 2)) }, { name: 'Beneficio', color: s2, values: r.mes.map((m) => round(m.ben, 2)) }];
   const ser2 = [{ name: 'Compras', color: s1, values: r.mes.map((m) => round(m.compras, 2)) }, { name: 'Salidas a coste', color: s2, values: r.mes.map((m) => round(m.salidas, 2)) }];
@@ -375,6 +383,7 @@ function renderInicio() {
       <div class="tile"><span>Comisiones ${r.y}</span><strong>${eur0(r.com)}</strong><small>cobradas ${eur0(r.comCob)}</small></div>
       <div class="tile"><span>Beneficio + comisiones</span><strong>${eur0(r.ben + r.com)}</strong><small>${r.n} pedidos</small></div>
       <button class="tile wide" id="goDeudas" style="border:0;text-align:left"><span>Sin cobrar (clientes)</span><strong class="${dd.totCli > 0 ? 'neg' : ''}">${eur(dd.totCli)}</strong></button>
+      <button class="tile wide" id="goReponer" style="border:0;text-align:left"><span>Por reponer</span><strong class="${nRep > 0 ? 'neg' : ''}">${nRep} ${nRep === 1 ? 'producto' : 'productos'}</strong></button>
     </div>
     <div class="card"><h3>Ventas y beneficio por mes <small>${r.y}</small></h3>${barChart('ch1', ser1, MES_C)}</div>
     <div class="card"><h3>Compras y salidas de stock <small>a coste</small></h3>${barChart('ch2', ser2, MES_C)}</div>
@@ -389,6 +398,7 @@ function renderInicio() {
   $('#rkWho').onclick = (e) => { const b = e.target.closest('[data-v]'); if (b) { ui.rankWho = b.dataset.v; renderInicio(); } };
   const rb = $('#rkBy'); if (rb) rb.onclick = (e) => { const b = e.target.closest('[data-v]'); if (b) { ui.rank = b.dataset.v; renderInicio(); } };
   $('#goDeudas').onclick = () => { ui.tab = 'deudas'; window.scrollTo(0, 0); renderAll(); };
+  $('#goReponer').onclick = () => { ui.tab = 'stock'; ui.stockSeg = 'stock'; ui.stockVer = 'reponer'; window.scrollTo(0, 0); renderAll(); };
   const ga = $('#goAj'); if (ga) ga.onclick = openSettings;
 }
 
@@ -449,11 +459,12 @@ function openPedido(orig, preCli) {
     : { fecha: todayISO(), cli: preCli || '', nota: '', cobrado: false, lineas: [] };
   if (isNew) f.lineas.push({ k: nk(), prod: '', txt: '', cant: '', precio: '', auto: true, concepto: false });
   const newCli = { on: false, nombre: '', propio: false };
-  const prods = state.productos.filter((p) => p.activo || f.lineas.some((l) => l.prod === p.id)).sort(byName);
   const body = openSheet(isNew ? 'Nueva venta' : 'Editar venta', '<div id="pf"></div>');
   const box = $('#pf', body);
   const isOwn = () => !newCli.on && !!cliById(f.cli)?.propio || (newCli.on && newCli.propio);
   const disp = (prod) => stockSin(prod, orig);
+  // En catálogo, o descatalogado que aún tiene stock (se vende hasta agotarlo), o ya en el pedido
+  const prods = state.productos.filter((p) => p.activo || disp(p.id).qty > 1e-9 || f.lineas.some((l) => l.prod === p.id)).sort(byName);
   const usado = (prod, exceptK) => f.lineas.filter((l) => l.prod === prod && l.k !== exceptK).reduce((t, l) => t + (parseNum(l.cant) || 0), 0);
   const costeLinea = (l) => { const o = orig && orig.lineas.find((x) => x.k === l.k && x.prod === l.prod); return o ? o.coste : disp(l.prod).avg; };
   const propuesto = (prod) => { if (newCli.on && newCli.propio) return round(disp(prod).avg * (1 + margenPropio()), 2); return precioPropuesto(prod, newCli.on ? '' : f.cli, orig); };
@@ -465,7 +476,7 @@ function openPedido(orig, preCli) {
     const opts = prods.map((p) => {
       const s = disp(p.id); const left = round(s.qty - usado(p.id, l.k), 3);
       const off = left <= 1e-9 && p.id !== l.prod;
-      return `<option value="${p.id}" ${l.prod === p.id ? 'selected' : ''} ${off ? 'disabled' : ''}>${esc(p.nombre)} · ${off ? 'sin stock' : qf(Math.max(0, s.qty))}</option>`;
+      return `<option value="${p.id}" ${l.prod === p.id ? 'selected' : ''} ${off ? 'disabled' : ''}>${esc(p.nombre)}${p.activo ? '' : ' (descatalogado)'} · ${off ? 'sin stock' : qf(Math.max(0, s.qty))}</option>`;
     }).join('');
     return `<div class="line" data-k="${l.k}">
       <div class="lt"><select data-f="prod" aria-label="Producto"><option value="">Elige producto…</option>${opts}</select><button type="button" class="lx" data-x="${l.k}" aria-label="Quitar">✕</button></div>
@@ -596,7 +607,10 @@ function openPedido(orig, preCli) {
         if (imp > 0) c.cobros.push({ id: uid(), ts: Date.now(), fecha: f.fecha, cli: cliId, aplic: { [id]: imp }, nota: 'Cobrado al vender', hist: false });
       }
     });
-    if (ok) { closeSheet(); toast((orig ? 'Venta actualizada' : 'Venta guardada') + (lastTrim > 0 ? ` · se quitaron ${eur(lastTrim)} de cobros` : '') + (nuevo && nuevo.mid ? ' · cliente del maestro' : '')); if (alta) refreshMx({}); }
+    if (ok) {
+      const rep = [...new Set(lineas.filter((l) => l.prod).map((l) => l.prod))].map((x) => prodById(x)).filter((x) => x && porReponer(x));
+      closeSheet(); toast((orig ? 'Venta actualizada' : 'Venta guardada') + (lastTrim > 0 ? ` · se quitaron ${eur(lastTrim)} de cobros` : '') + (nuevo && nuevo.mid ? ' · cliente del maestro' : '') + (rep.length ? ` · por reponer: ${rep.map((x) => x.nombre).join(', ')}` : '')); if (alta) refreshMx({});
+    }
   };
   draw();
   if (isNew && !preCli) setTimeout(() => $('#pC', box)?.focus(), 60);
@@ -729,17 +743,28 @@ function headStock() {
     <div class="k hero"><span>Valor del stock (a coste)</span><strong>${eur0(vs.v)}</strong></div>
     <div class="k"><span>Productos con stock</span><strong>${vs.n}</strong></div>
     <div class="k"><span>Margen a tarifa</span><strong>${tv > 0 ? pctf((tv - cv) / tv) : '—'}</strong></div>
+    <div class="k rep"><span>Por reponer</span><strong>${listaReponer().length}</strong></div>
   </div>`;
 }
 function renderStock() {
   const q = ui.stockQ.trim().toLowerCase();
-  const ps = state.productos.filter((p) => (!q || p.nombre.toLowerCase().includes(q) || provName(p.prov).toLowerCase().includes(q)) && (!ui.stockTipo || p.tipo === ui.stockTipo))
-    .filter((p) => ui.stockAll || (p.activo && (ui.stockSeg === 'tarifa' || stockOf(p.id).qty > 1e-9)))
-    .sort(byName);
+  const base = state.productos.filter((p) => (!q || p.nombre.toLowerCase().includes(q) || provName(p.prov).toLowerCase().includes(q)) && (!ui.stockTipo || p.tipo === ui.stockTipo));
+  // Pestaña Stock: Con stock (en catálogo, y descatalogados que aún tienen) · Por reponer · Catálogo · Descatalogados · Todos
+  const VER = {
+    stock: (p) => stockOf(p.id).qty > 1e-9,
+    reponer: (p) => porReponer(p),
+    catalogo: (p) => p.activo,
+    descat: (p) => !p.activo,
+    todos: () => true,
+  };
+  if (!VER[ui.stockVer]) ui.stockVer = 'stock';
+  const ps = base.filter((p) => (ui.stockSeg === 'stock' ? VER[ui.stockVer](p) : ui.stockAll || p.activo)).sort(byName);
+  const nVer = (k) => base.filter(VER[k]).length;
+  const pills = (p) => (porReponer(p) ? '<span class="pill pen">Por reponer</span>' : '') + (p.activo ? '' : '<span class="pill">Descatalogado</span>');
   const rows = ps.map((p) => {
     const s = stockOf(p.id);
     if (ui.stockSeg === 'stock') return `<li><button class="row ${p.activo ? '' : 'dim'}" data-id="${p.id}">
-      <div class="main"><div class="name">${esc(p.nombre)}</div><div class="sub">${esc(p.tipo || 'Sin tipo')} · ${esc(provName(p.prov) || '—')}</div></div>
+      <div class="main"><div class="name">${esc(p.nombre)}</div><div class="sub">${pills(p)}${esc(p.tipo || 'Sin tipo')} · ${esc(provName(p.prov) || '—')}${p.activo && minOf(p) > 0 ? ' · mín. ' + qf(minOf(p)) : ''}</div></div>
       <div class="side"><div class="big">${qf(s.qty)}</div><div class="sub">${s.qty > 1e-9 ? nf(s.avg, 2, 4) + ' € · ' + eur0(s.valor) : 'sin stock'}</div></div></button></li>`;
     const m = p.tarifa > 0 && s.avg > 0 ? (p.tarifa - s.avg) / p.tarifa : null;
     return `<li class="mrow ${p.activo ? '' : 'dim'}"><button class="info" data-id="${p.id}"><div class="name">${esc(p.nombre)}</div><div class="sub">Medio ${s.avg > 0 ? nf(s.avg, 2, 4) + ' €' : '—'}${m != null ? ` · margen <b class="${m < 0 ? 'neg' : ''}">${pctf(m)}</b>` : ''}</div></button>
@@ -750,11 +775,14 @@ function renderStock() {
     <input id="sQ" class="search" type="search" placeholder="Buscar producto o proveedor" value="${esc(ui.stockQ)}">
     <div class="chips" id="sTipo"><button class="chip" data-t="" aria-pressed="${!ui.stockTipo}">Todos</button>${tipos().map((t) => `<button class="chip" data-t="${esc(t)}" aria-pressed="${ui.stockTipo === t}">${esc(t)}</button>`).join('')}</div>
     ${ui.stockSeg === 'tarifa' ? '<p class="hint" style="margin:4px 2px 10px">La tarifa es el precio normal de venta: aparece propuesto en cada venta y puedes cambiarlo allí. Escribe el nuevo precio y sal de la casilla para guardarlo.</p>' : ''}
-    <div class="summary"><span><b>${ps.length}</b> productos</span><label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="sAll" ${ui.stockAll ? 'checked' : ''}> ${ui.stockSeg === 'stock' ? 'ver también sin stock y desactivados' : 'ver desactivados'}</label></div>
-    ${ps.length ? `<ul class="list" id="sList">${rows}</ul>` : '<div class="empty">No hay productos con este filtro.</div>'}`;
+    ${ui.stockSeg === 'stock' ? `<div class="chips" id="sVer">${[['stock', 'Con stock'], ['reponer', 'Por reponer'], ['catalogo', 'Catálogo'], ['descat', 'Descatalogados'], ['todos', 'Todos']].map(([k, t]) => `<button class="chip" data-v="${k}" aria-pressed="${ui.stockVer === k}">${t} (${nVer(k)})</button>`).join('')}</div>` : ''}
+    ${ui.stockSeg === 'stock' && ui.stockVer === 'reponer' ? '<p class="hint" style="margin:4px 2px 10px">Productos en catálogo con el stock en su mínimo o por debajo (sin mínimo: a 0). El mínimo se pone en cada producto. Si ya no lo vas a vender, descatalógalo y deja de avisar.</p>' : ''}
+    <div class="summary"><span><b>${ps.length}</b> productos</span>${ui.stockSeg === 'tarifa' ? `<label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="sAll" ${ui.stockAll ? 'checked' : ''}> ver descatalogados</label>` : ''}</div>
+    ${ps.length ? `<ul class="list" id="sList">${rows}</ul>` : `<div class="empty">${ui.stockSeg === 'stock' && ui.stockVer === 'reponer' ? 'Nada por reponer. 👍' : 'No hay productos con este filtro.'}</div>`}`;
   $('#sSeg').onclick = (e) => { const b = e.target.closest('[data-v]'); if (b) { ui.stockSeg = b.dataset.v; renderAll(); } };
   $('#sTipo').onclick = (e) => { const b = e.target.closest('[data-t]'); if (b) { ui.stockTipo = b.dataset.t; renderStock(); } };
-  $('#sAll').onchange = (e) => { ui.stockAll = e.target.checked; renderStock(); };
+  const sAll = $('#sAll'); if (sAll) sAll.onchange = (e) => { ui.stockAll = e.target.checked; renderStock(); };
+  const sVer = $('#sVer'); if (sVer) sVer.onclick = (e) => { const b = e.target.closest('[data-v]'); if (b) { ui.stockVer = b.dataset.v; renderStock(); } };
   let qt; $('#sQ').oninput = (e) => { clearTimeout(qt); qt = setTimeout(() => { ui.stockQ = e.target.value; renderStock(); const i = $('#sQ'); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }, 300); };
   const ul = $('#sList');
   if (ul) {
@@ -785,6 +813,7 @@ function openProducto(id) {
       <div><span>Valor</span><b>${eur(s.valor)}</b></div>
       <div><span>Tarifa</span><b>${nf(p.tarifa, 2, 4)} €${p.tarifa > 0 && s.avg > 0 ? ' · margen ' + pctf((p.tarifa - s.avg) / p.tarifa) : ''}</b></div>
       <div><span>Vendido en ${thisYear()}</span><b>${qf(vendY)}</b></div>
+      <div><span>Estado</span><b class="${porReponer(p) ? 'neg' : ''}">${!p.activo ? 'Descatalogado' : porReponer(p) ? 'Por reponer' + (minOf(p) > 0 ? ' (mín. ' + qf(minOf(p)) + ')' : '') : 'En catálogo' + (minOf(p) > 0 ? ' · mín. ' + qf(minOf(p)) : '')}</b></div>
     </div>
     <div class="actions"><button class="btn primary" id="prBuy">Anotar compra de este producto</button></div>`}
     <h3>Datos del producto</h3>
@@ -796,29 +825,39 @@ function openProducto(id) {
     <datalist id="prTl">${[...new Set([...CATEGORIAS, ...tipos()])].map((t) => `<option value="${esc(t)}">`).join('')}</datalist>
     ${IX ? `<label class="fld"><span>Enlazar con el maestro</span><select id="prMx"><option value="">Sin enlazar</option>${mxProdOptions()}</select></label>` : ''}`}
     <label class="fld"><span>Proveedor habitual</span><select id="prV"><option value="">Sin proveedor</option>${[...state.proveedores].sort(byName).map((v) => `<option value="${v.id}" ${p.prov === v.id ? 'selected' : ''}>${esc(v.nombre)}</option>`).join('')}</select></label>
-    <button type="button" class="switch" id="prA" role="switch" aria-checked="${p.activo}"><span>Activo (aparece al vender y comprar)</span><i></i></button>
+    <h3>Catálogo y aviso de stock</h3>
+    <button type="button" class="switch" id="prA" role="switch" aria-checked="${p.activo}"><span>En catálogo (lo sigues vendiendo)</span><i></i></button>
+    <p class="hint" id="prAh"></p>
+    ${field('prMin', 'Stock mínimo', fmtIn(p.min, 3), { ph: 'Vacío = avisa al llegar a 0' })}
     <div class="actions ${isNew ? '' : 'two'}">${isNew ? '' : `<button class="btn danger" id="prDel" ${used ? 'disabled' : ''}>Borrar</button>`}<button class="btn primary" id="prSave">Guardar</button></div>
-    ${used ? '<p class="hint" style="margin-top:10px">Solo se pueden borrar productos sin movimientos. Si ya no lo trabajas, desactívalo.</p>' : ''}
+    ${used ? '<p class="hint" style="margin-top:10px">Solo se pueden borrar productos sin movimientos. Si ya no lo vendes, descatalógalo.</p>' : ''}
     ${movs.length ? `<h3>Últimos movimientos</h3><ul class="list">${movs.slice(0, 10).map((m) => `<li class="row" style="box-shadow:none"><div class="main"><div class="name">${m.t} · ${esc(m.who)}</div><div class="sub">${fmtDate(m.fecha)} · ${nf(m.pr, 2, 4)} €</div></div><div class="side"><b class="${m.q < 0 ? '' : ''}">${m.q > 0 ? '+' : ''}${qf(m.q)}</b></div></li>`).join('')}</ul>` : ''}`);
   let activo = p.activo;
   const np = npInit();
   const drawNp = () => { const b = $('#prNp', body); if (!b) return; b.innerHTML = npHTML(np); npBind(b, np, drawNp, (mp) => { const sel = $('#prV', body); if (mp && mp.proveedor && sel && !sel.value) { const v = state.proveedores.find((x) => MX.norm(x.nombre) === MX.norm(mp.proveedor)); if (v) sel.value = v.id; } }); };
   drawNp();
-  $('#prA', body).onclick = (e) => { activo = !activo; e.currentTarget.setAttribute('aria-checked', activo); };
+  const pintaA = () => {
+    $('#prAh', body).textContent = activo ? 'Sale al vender y al comprar. Avisa «Por reponer» cuando el stock llegue a su mínimo.' : 'Descatalogado: no sale al comprar ni avisa. Si le queda stock, puedes venderlo hasta agotarlo.';
+    $('#prMin', body).closest('.fld').hidden = !activo;
+  };
+  pintaA();
+  $('#prA', body).onclick = (e) => { activo = !activo; e.currentTarget.setAttribute('aria-checked', activo); pintaA(); };
+  const leeMin = () => { const t = $('#prMin', body).value.trim(); if (!t) return null; const v = parseNum(t); return v >= 0 ? round(v, 3) : NaN; };
   if (!isNew) $('#prBuy', body).onclick = () => reopen(() => openCompra(null, id));
   $('#prSave', body).onclick = () => {
     const prov = $('#prV', body).value || null;
+    const min = leeMin(); if (Number.isNaN(min)) return toast('Revisa el stock mínimo', true);
     if (isNew) {
       let r; try { r = npBuild(np, prov); } catch (e) { return toast(e.message, true); }
-      r.prod.activo = activo;
+      r.prod.activo = activo; r.prod.min = min;
       if (commit((c) => { c.productos.push(r.prod); if (r.alta) pedirAlta(c, 'producto', r.prod.id, r.alta); })) { closeSheet(); toast('Producto creado' + (r.aviso ? ' · ' + r.aviso : '')); if (r.alta) refreshMx({}); }
       return;
     }
     const tr = $('#prR', body).value.trim(); const tarifa = tr ? parseNum(tr) : 0; if (!(tarifa >= 0)) return toast('Revisa la tarifa', true);
-    if (p.mid) { if (commit((c) => { Object.assign(prodById(id, c), { prov, tarifa: round(tarifa, 4), activo }); })) { closeSheet(); toast('Producto actualizado'); } return; }
+    if (p.mid) { if (commit((c) => { Object.assign(prodById(id, c), { prov, tarifa: round(tarifa, 4), activo, min }); })) { closeSheet(); toast('Producto actualizado'); } return; }
     const nombre = $('#prN', body).value.trim(); if (!nombre) return toast('Escribe el nombre', true);
     if (state.productos.some((o) => o.id !== id && MX.norm(o.nombre) === MX.norm(nombre))) return toast('Ya hay un producto con ese nombre', true);
-    const data = { nombre, tipo: $('#prT', body).value.trim(), prov, tarifa: round(tarifa, 4), activo };
+    const data = { nombre, tipo: $('#prT', body).value.trim(), prov, tarifa: round(tarifa, 4), activo, min };
     const lk = $('#prMx', body) ? $('#prMx', body).value : '';
     if (lk) {
       const mid = lk.slice(0, lk.indexOf('|')), pres = lk.slice(lk.indexOf('|') + 1);
@@ -1211,7 +1250,7 @@ function syncPayload() {
   });
   const compras = [...state.compras].sort((a, b) => a.fecha.localeCompare(b.fecha) || a.ts - b.ts).map((c) => [c.fecha, MESES[Number(c.fecha.slice(5, 7)) - 1], yearOf(c.fecha), prodName(c.prod), prodById(c.prod)?.tipo || '', provName(c.prov), c.cant, c.precio, round(c.cant * c.precio, 2), c.nota || '', prodById(c.prod)?.mid || '']);
   const prods = [...state.productos].sort(byName);
-  const stock = prods.map((p) => { const s = stockOf(p.id); return [p.nombre, p.tipo, provName(p.prov), round(s.qty, 3), round(s.avg, 4), round(s.valor, 2), p.tarifa, p.tarifa > 0 && s.avg > 0 ? round((p.tarifa - s.avg) / p.tarifa, 4) : '', p.activo ? 'Sí' : 'No', p.mid || '']; });
+  const stock = prods.map((p) => { const s = stockOf(p.id); return [p.nombre, p.tipo, provName(p.prov), round(s.qty, 3), round(s.avg, 4), round(s.valor, 2), p.tarifa, p.tarifa > 0 && s.avg > 0 ? round((p.tarifa - s.avg) / p.tarifa, 4) : '', p.activo ? 'Sí' : 'No', p.mid || '', minOf(p) > 0 ? minOf(p) : '', porReponer(p) ? 'Sí' : 'No']; });
   const cobros = [...state.cobros].sort((a, b) => a.fecha.localeCompare(b.fecha) || a.ts - b.ts).map((c) => [c.fecha, cliName(c.cli), cobroImp(c), Object.keys(c.aplic).length, c.nota || '']);
   const pend = [];
   [...state.pedidos].filter((p) => pendOf(p) > EPS).sort((a, b) => cliName(a.cli).localeCompare(cliName(b.cli), 'es') || a.fecha.localeCompare(b.fecha)).forEach((p) => {
@@ -1226,7 +1265,7 @@ function syncPayload() {
     { nombre: 'Resumen', cabecera: ['Año', 'Ventas (€)', 'Beneficio (€)', 'Margen', 'Ventas clientes (€)', 'Benef. clientes (€)', 'Ventas tus fincas (€)', 'Benef. tus fincas (€)', 'Comisiones (€)', 'Beneficio + comisiones (€)'], filas: res.concat([['', '', '', '', '', '', '', '', '', '']]).concat(res2.map((r) => [r[0], r[1], '', '', '', '', '', '', '', ''])), formatos: ['0', EUR, EUR, P, EUR, EUR, EUR, EUR, EUR, EUR], fechas: [] },
     { nombre: 'Ventas', cabecera: ['Fecha', 'Mes', 'Año', 'Producto', 'Cliente', 'Cantidad', 'Precio (€)', 'Importe (€)', 'Cobro', 'Coste (€)', 'Importe coste (€)', 'Beneficio (€)', 'Margen', 'Proveedor', 'Tipo', 'Cliente / fincas', 'Nota', 'ID cliente', 'ID producto'], filas: ventas, formatos: [F, null, '0', null, null, Q, E4, EUR, null, E4, EUR, EUR, P, null, null, null, null, null, null], fechas: [0] },
     { nombre: 'Compras', cabecera: ['Fecha', 'Mes', 'Año', 'Producto', 'Tipo', 'Proveedor', 'Cantidad', 'Precio (€)', 'Importe (€)', 'Nota', 'ID producto'], filas: compras, formatos: [F, null, '0', null, null, null, Q, E4, EUR, null, null], fechas: [0] },
-    { nombre: 'Stock', cabecera: ['Producto', 'Tipo', 'Proveedor', 'Stock', 'Precio medio (€)', 'Valor (€)', 'Tarifa (€)', 'Margen tarifa', 'Activo', 'ID producto'], filas: stock, formatos: [null, null, null, Q, E4, EUR, E4, P, null, null], fechas: [] },
+    { nombre: 'Stock', cabecera: ['Producto', 'Tipo', 'Proveedor', 'Stock', 'Precio medio (€)', 'Valor (€)', 'Tarifa (€)', 'Margen tarifa', 'En catálogo', 'ID producto', 'Stock mínimo', 'Por reponer'], filas: stock, formatos: [null, null, null, Q, E4, EUR, E4, P, null, null, Q, null], fechas: [] },
     { nombre: 'Pendientes', cabecera: ['Cliente', 'Fecha pedido', 'Importe (€)', 'Pagado (€)', 'Pendiente (€)', 'Cliente / fincas', 'Productos', 'ID cliente'], filas: pend, formatos: [null, F, EUR, EUR, EUR, null, null, null], fechas: [1] },
     { nombre: 'Cobros', cabecera: ['Fecha', 'Cliente', 'Importe (€)', 'Nº pedidos', 'Nota'], filas: cobros, formatos: [F, null, EUR, '0', null], fechas: [0] },
     { nombre: 'Comisiones', cabecera: ['Fecha', 'Año', 'Producto', 'Proveedor', 'Cliente', 'Cantidad', 'Precio (€)', 'Importe venta (€)', '% Comisión', 'Comisión (€)', 'Cobrada'], filas: coms, formatos: [F, '0', null, null, null, Q, E4, EUR, P, EUR, null], fechas: [0] },
@@ -1724,7 +1763,7 @@ function openSettings() {
     <div class="sep"></div>
     <p class="small">Ventas · FG Agro v${APP_VERSION}. La app no lleva datos dentro: en un móvil nuevo se restaura desde la hoja de Google o desde un fichero de copia.</p>`);
   $('#aCli', body).onclick = () => reopen(openClientes);
-  $('#aPro', body).onclick = () => { closeSheet(); ui.tab = 'stock'; ui.stockSeg = 'stock'; ui.stockAll = true; renderAll(); };
+  $('#aPro', body).onclick = () => { closeSheet(); ui.tab = 'stock'; ui.stockSeg = 'stock'; ui.stockVer = 'todos'; ui.stockAll = true; renderAll(); };
   $('#aPrv', body).onclick = () => reopen(openProveedores);
   $('#aMg', body).onchange = (e) => {
     const n = parseNum(e.target.value);
@@ -1796,6 +1835,8 @@ function renderAll() {
   document.querySelectorAll('.tab').forEach((b) => { if (b.dataset.tab === ui.tab) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current'); });
   const nd = deudas().cli.length, badge = $('#deudaBadge');
   badge.hidden = !nd; badge.textContent = nd;
+  const nr = listaReponer().length, sb = $('#stockBadge');
+  if (sb) { sb.hidden = !nr; sb.textContent = nr; }
   $('#fab').hidden = !t.fab; if (t.fab) $('#fabLabel').textContent = t.fab;
   renderSyncStatus(); renderMxStatus();
   t.render();
